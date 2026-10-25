@@ -1,8 +1,8 @@
 # SHA-256 fingerprint of the certificate that signs release APKs.
 #
-# CN=DeltaTor, OU=Release, O=Delta-Kronecker, C=IR
-# Taken from the v2 signing block of the published v2.0.0 APKs and confirmed
-# with: keytool -printcert -file cert.der
+# CN=DeltaTor fork, OU=Release, O=horvickk
+# The fork's own release key (upstream's key is not ours; the fork also has its
+# own applicationId, so the two never update each other).
 #
 # To re-check it after a deliberate key rotation, use either:
 #   keytool -list -v -keystore <your.jks> -alias <alias>     # look for "SHA256:"
@@ -17,4 +17,4 @@
 # fingerprint in a reviewed file is the whole point -- if it lived in a secret,
 # whoever rotated the key would rotate the expected value in the same breath and
 # the check would approve itself.
-F5:28:75:47:DE:AA:5F:31:3C:BA:39:95:45:83:02:23:4B:BF:3D:8E:7B:0D:92:F2:7C:33:38:37:45:6D:F7:EB
+20:4E:96:D4:70:4F:8E:47:E9:B0:04:FE:1E:C1:EF:58:6E:56:9E:80:DC:05:B8:B7:99:2B:B1:A2:80:B8:C4:5E
