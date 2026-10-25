@@ -62,6 +62,13 @@ object TorSocksBridge {
      * Set by the VPN service from the non-VPN network's link properties.
      */
     @Volatile var directDnsServers: List<InetAddress> = emptyList()
+
+    /**
+     * Whether the underlying network can reach the internet over IPv6. The VPN
+     * captures IPv6, so apps ask for IPv6 addresses; on a network without IPv6
+     * a bypassed connection must not be handed one, or it can only fail.
+     */
+    @Volatile var directIpv6: Boolean = false
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
@@ -390,19 +397,12 @@ object TorSocksBridge {
             }
             RouteOutbound.BYPASS -> {
                 logd("CONNECT: bypass ${host ?: destHost}:$destPort (${protocol ?: "?"})")
-                val direct = try {
-                    // The app is excluded from its own VPN, so a plain socket
-                    // leaves through the underlying network.
-                    Socket().apply {
-                        connect(InetSocketAddress(destHost, destPort), DIRECT_CONNECT_TIMEOUT_MS)
-                        tcpNoDelay = true
-                    }
-                } catch (e: Exception) {
-                    logd("CONNECT: direct connection to $destHost:$destPort failed: ${e.message}")
-                    if (!earlyReply) {
-                        clientOutput.write(SOCKS_REFUSED)
-                        clientOutput.flush()
-                    }
+                val direct = openDirect(destHost, destPort, literal)
+                if (direct == null) {
+                    // The client was already told the connection is up (the
+                    // early reply), so failing here would surface as a dropped
+                    // connection with no retry. Tor still gets the site there.
+                    connectViaTor(destHost, destPort, rawAddr, portBytes, clientSocket, input, clientOutput, sendReply = !earlyReply)
                     return
                 }
                 if (!earlyReply) {
@@ -413,6 +413,27 @@ object TorSocksBridge {
             }
             RouteOutbound.PROXY ->
                 connectViaTor(destHost, destPort, rawAddr, portBytes, clientSocket, input, clientOutput, sendReply = !earlyReply)
+        }
+    }
+
+    /**
+     * A socket to [host]:[port] outside the tunnel, or null when that cannot
+     * work. The app is excluded from its own VPN, so a plain socket leaves
+     * through the underlying network.
+     */
+    private fun openDirect(host: String, port: Int, literal: ByteArray?): Socket? {
+        if (literal?.size == 16 && !directIpv6) {
+            Log.w(TAG, "bypass: $host is IPv6 but the network has no IPv6, using Tor")
+            return null
+        }
+        return try {
+            Socket().apply {
+                connect(InetSocketAddress(host, port), DIRECT_CONNECT_TIMEOUT_MS)
+                tcpNoDelay = true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "bypass: direct connection to $host:$port failed (${e.message}), using Tor")
+            null
         }
     }
 
@@ -627,7 +648,13 @@ object TorSocksBridge {
         val verdict = if (r.enabled) dnsQuestionName(query)?.let { r.decideName(it) } else null
         val response = when (verdict) {
             RouteOutbound.BLOCK -> return dnsNxdomain(query)
-            RouteOutbound.BYPASS -> resolveDirect(query) ?: resolveThroughTor(query)
+            RouteOutbound.BYPASS -> {
+                // No IPv6 underneath: answer AAAA with "no such record" so the
+                // app goes straight to IPv4 instead of trying an address that
+                // can only fail.
+                if (!directIpv6 && dnsQuestionType(query) == 28) return dnsNoData(query)
+                resolveDirect(query) ?: resolveThroughTor(query)
+            }
             else -> resolveThroughTor(query)
         }
         if (response != null) cacheDnsResponse(query, response)
@@ -650,6 +677,18 @@ object TorSocksBridge {
         }
         return null
     }
+
+    /** QTYPE of the first question, or -1. */
+    private fun dnsQuestionType(q: ByteArray): Int {
+        var pos = 12
+        while (pos < q.size && q[pos].toInt() != 0) pos += 1 + (q[pos].toInt() and 0xFF)
+        if (pos + 3 > q.size) return -1
+        return ((q[pos + 1].toInt() and 0xFF) shl 8) or (q[pos + 2].toInt() and 0xFF)
+    }
+
+    /** NOERROR with no answers: the name exists, the record type does not. */
+    private fun dnsNoData(query: ByteArray): ByteArray? =
+        dnsNxdomain(query)?.also { it[3] = 0x80.toByte() }
 
     /** NXDOMAIN for [query]: header and question echoed, no records. */
     private fun dnsNxdomain(query: ByteArray): ByteArray? {

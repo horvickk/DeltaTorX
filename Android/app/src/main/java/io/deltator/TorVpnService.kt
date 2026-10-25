@@ -457,6 +457,12 @@ class TorVpnService : VpnService() {
         // Compiled while Tor bootstraps, not before: loading the lists takes a
         // moment and the race does not need them.
         TorSocksBridge.directDnsServers = underlyingDnsServers()
+        TorSocksBridge.directIpv6 = underlyingHasIpv6()
+        Log.i(
+            TAG,
+            "routing: underlying DNS ${TorSocksBridge.directDnsServers.joinToString { it.hostAddress ?: "?" }}, " +
+                "IPv6 ${if (TorSocksBridge.directIpv6) "yes" else "no"}"
+        )
         val routerJob = serviceScope.async(Dispatchers.IO) { RouteStore.compile() }
         RouteStore.onCompiled = { TorSocksBridge.router = it }
 
@@ -1843,6 +1849,28 @@ class TorVpnService : VpnService() {
         } catch (e: Exception) {
             Log.w(TAG, "could not read the network's DNS servers: ${e.message}")
             emptyList()
+        }
+    }
+
+    /** Whether some non-VPN network has a global IPv6 address and an IPv6 default route. */
+    private fun underlyingHasIpv6(): Boolean {
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        return try {
+            cm.allNetworks.any { n ->
+                val caps = cm.getNetworkCapabilities(n) ?: return@any false
+                if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) ||
+                    !caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                ) return@any false
+                val lp = cm.getLinkProperties(n) ?: return@any false
+                val global = lp.linkAddresses.any { la ->
+                    val a = la.address
+                    a is java.net.Inet6Address && !a.isLinkLocalAddress && !a.isSiteLocalAddress &&
+                        !a.isLoopbackAddress && (a.address[0].toInt() and 0xFE) != 0xFC
+                }
+                global && lp.routes.any { it.isDefaultRoute && it.destination.address is java.net.Inet6Address }
+            }
+        } catch (e: Exception) {
+            false
         }
     }
 
