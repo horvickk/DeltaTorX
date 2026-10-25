@@ -1,66 +1,57 @@
-# Countries with running Tor exits, from the Tor relay database.
-# Consensus published: 2026-09-30 20:00:00 UTC. Regenerate with:
-#   https://onionoo.torproject.org/details?search=flag:Exit&search=running:true&fields=country,consensus_weight_fraction
-# Sum consensus_weight_fraction per country, keep the countries, drop this header.
-# Columns: code, name, running exits, share of all exit bandwidth.
-NL	Netherlands	630	0.089592
-DE	Germany	420	0.084902
-US	United States	1240	0.050425
-SE	Sweden	348	0.031698
-AT	Austria	123	0.019443
-LU	Luxembourg	95	0.015078
-FR	France	75	0.010293
-NO	Norway	47	0.006739
-DK	Denmark	15	0.005153
-RO	Romania	60	0.004170
-IT	Italy	14	0.002245
-CH	Switzerland	21	0.002170
-HU	Hungary	15	0.002088
-BG	Bulgaria	20	0.001081
-IS	Iceland	16	0.000902
-FI	Finland	14	0.000810
-CA	Canada	21	0.000657
-SC	Seychelles	2	0.000640
-GB	United Kingdom	13	0.000619
-PL	Poland	11	0.000605
-ZA	South Africa	13	0.000574
-UA	Ukraine	15	0.000484
-TR	Türkiye	6	0.000479
-RS	Serbia	3	0.000421
-MD	Moldova	5	0.000410
-CZ	Czechia	15	0.000410
-HR	Croatia	18	0.000269
-AE	United Arab Emirates	2	0.000255
-SG	Singapore	34	0.000253
-HK	Hong Kong	7	0.000250
-LT	Lithuania	1	0.000213
-GR	Greece	1	0.000198
-BE	Belgium	1	0.000120
-CL	Chile	3	0.000091
-ID	Indonesia	7	0.000088
-MX	Mexico	4	0.000086
-TW	Taiwan	4	0.000083
-VN	Vietnam	3	0.000073
-EE	Estonia	3	0.000073
-MY	Malaysia	4	0.000054
-PT	Portugal	1	0.000047
-NZ	New Zealand	3	0.000040
-PE	Peru	2	0.000039
-CR	Costa Rica	2	0.000034
-KR	South Korea	3	0.000032
-IL	Israel	1	0.000023
-ES	Spain	13	0.000021
-JP	Japan	8	0.000016
-CY	Cyprus	2	0.000011
-AU	Australia	2	0.000005
-SA	Saudi Arabia	1	0.000001
-IN	India	1	0.000000
-PH	Philippines	1	0.000000
-AR	Argentina	7	0.000000
-RU	Russia	1	0.000000
-LV	Latvia	15	0.000000
-VE	Venezuela	1	0.000000
-EC	Ecuador	1	0.000000
-BZ	Belize	1	0.000000
-BR	Brazil	1	0.000000
-BD	Bangladesh	1	0.000000
+# Countries with running Tor exits, from the Tor relay database (onionoo).
+# Relays published: 2026-10-25 06:00:00 UTC. Regenerate with:
+#   https://onionoo.torproject.org/details?search=flag:Exit%20running:true&fields=country,country_name,exit_probability
+# Sum exit_probability per country (all exits together sum to 1). The app refreshes
+# this daily from the same query; this copy is the offline fallback.
+# Columns: code, name, running exits, share of exit traffic.
+NL	Netherlands	615	0.323033
+DE	Germany	403	0.238840
+US	United States	1015	0.153337
+SE	Sweden	204	0.083969
+AT	Austria	123	0.056085
+FR	France	64	0.030561
+NO	Norway	49	0.021903
+DK	Denmark	15	0.016130
+RO	Romania	41	0.011991
+CH	Switzerland	22	0.007419
+HU	Hungary	14	0.006721
+LU	Luxembourg	11	0.006692
+IT	Italy	9	0.006045
+IS	Iceland	20	0.004074
+SC	Seychelles	1	0.003500
+BG	Bulgaria	19	0.003484
+PL	Poland	11	0.002755
+UA	Ukraine	8	0.002493
+ZA	South Africa	10	0.002240
+FI	Finland	11	0.002100
+CZ	Czechia	13	0.002070
+GB	United Kingdom	9	0.001971
+TR	Türkiye	6	0.001855
+RS	Serbia	6	0.001812
+CA	Canada	4	0.001279
+MD	Moldova	5	0.001263
+GR	Greece	1	0.001066
+AU	Australia	4	0.000583
+HK	Hong Kong	6	0.000539
+SG	Singapore	9	0.000447
+EE	Estonia	3	0.000431
+HR	Croatia	2	0.000429
+BE	Belgium	1	0.000398
+AE	United Arab Emirates	1	0.000382
+CL	Chile	4	0.000342
+MX	Mexico	2	0.000332
+ID	Indonesia	6	0.000291
+VN	Vietnam	3	0.000170
+MY	Malaysia	3	0.000157
+PE	Peru	2	0.000137
+PT	Portugal	1	0.000122
+NZ	New Zealand	3	0.000110
+CR	Costa Rica	2	0.000092
+KR	South Korea	2	0.000069
+IN	India	1	0.000068
+TW	Taiwan	4	0.000063
+ES	Spain	3	0.000054
+IL	Israel	1	0.000049
+JP	Japan	4	0.000042
+AZ	Azerbaijan	1	0.000002
+CY	Cyprus	1	0.000002
