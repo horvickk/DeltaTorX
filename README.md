@@ -243,7 +243,7 @@ needed.
 
 - No account, no analytics, no telemetry, no crash reporting on the main builds.
 - The only outbound requests are the bridge list download, the VPN Gate host list, the
-  update check, and a single one-time request per installation used to count installs.
+  route list update and the update check. No install or connect counters.
 - All traffic goes through Tor once the tunnel is up; the app's own requests (bridges,
   updates, host list) go direct, never through the tunnel.
 

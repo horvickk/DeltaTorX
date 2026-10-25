@@ -193,14 +193,8 @@ class MainActivity : ComponentActivity() {
                             s.socksEndpoint.isNotEmpty() ->
                                 sendAction(TorVpnService.ACTION_DISCONNECT)
                             s.connecting || s.connected -> sendAction(TorVpnService.ACTION_DISCONNECT)
-                            s.torRunning -> {
-                                ConnectCounter.countConnect(applicationContext)
-                                sendAction(TorVpnService.ACTION_START_VPN)
-                            }
-                            else -> {
-                                ConnectCounter.countConnect(applicationContext)
-                                requestVpnPermissionAndConnect()
-                            }
+                            s.torRunning -> sendAction(TorVpnService.ACTION_START_VPN)
+                            else -> requestVpnPermissionAndConnect()
                         }
                     },
                     onStopVpn = { sendAction(TorVpnService.ACTION_STOP_VPN) },

@@ -31,7 +31,6 @@ class DeltaTorApp : Application() {
         BridgeStore.refreshState(this)
         appScope.launch { BridgeStore.autoUpdateIfStale(this@DeltaTorApp) }
         appScope.launch { ReleaseChecker.check(this@DeltaTorApp) }
-        appScope.launch { InstallCounter.countInstall(this@DeltaTorApp) }
         // Proxy chain: restore the persisted pool, then refresh it if the day
         // has turned and demand the daily worker keeps it turning.
         ProxyChainManager.init(this)

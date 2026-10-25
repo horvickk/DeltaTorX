@@ -80,7 +80,8 @@ android {
     ndkVersion = "29.0.14206865"
 
     defaultConfig {
-        applicationId = "io.deltator"
+        // Differs from upstream (io.deltator) so the fork installs next to the original.
+        applicationId = "io.horvickk.deltator"
         minSdk = 24
         targetSdk = 35
         versionCode = appVersionCode
