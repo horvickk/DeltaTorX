@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import io.deltator.routing.RouteStore
 import android.net.Network
 import android.net.VpnService
 import android.os.Build
@@ -444,7 +445,12 @@ class TorVpnService : VpnService() {
         }
 
         TorSocksBridge.debugLogging = Config.debugMode
-        TorSocksBridge.domainRouter = io.deltator.tunnel.DomainRouter.DISABLED
+        // The route list, compiled once per connect and recompiled whenever it is
+        // edited, so a rule switched on the Routes screen applies to the next
+        // connection without reconnecting.
+        TorSocksBridge.directDnsServers = underlyingDnsServers()
+        TorSocksBridge.router = withContext(Dispatchers.IO) { RouteStore.compile() }
+        RouteStore.onCompiled = { TorSocksBridge.router = it }
 
         // Step 1: Resolve the bridge lists for the selected mode and start its
         // runner(s). In auto mode vanilla / obfs4 / webtunnel race together, plus
@@ -1802,6 +1808,25 @@ class TorVpnService : VpnService() {
             } catch (e: Exception) {
                 Log.w("ExitNode", "exit locator failed: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * DNS servers of the networks under the VPN, for names a route sends around
+     * Tor. Read from every non-VPN network with internet, the active one first.
+     */
+    private fun underlyingDnsServers(): List<java.net.InetAddress> {
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return emptyList()
+        return try {
+            val networks = listOfNotNull(cm.activeNetwork) + cm.allNetworks
+            networks.distinct().filter { n ->
+                val caps = cm.getNetworkCapabilities(n) ?: return@filter false
+                !caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) &&
+                    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            }.flatMap { cm.getLinkProperties(it)?.dnsServers.orEmpty() }.distinct()
+        } catch (e: Exception) {
+            Log.w(TAG, "could not read the network's DNS servers: ${e.message}")
+            emptyList()
         }
     }
 

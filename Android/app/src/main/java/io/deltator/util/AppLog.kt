@@ -229,7 +229,7 @@ object AppLog {
         "TlsSocketFactory",
         "NaiveSocksProxy",
         "PayloadSocketFactory",
-        "DomainRouter",
+        "Router",
         "DnsDoHProxy"
     )
 

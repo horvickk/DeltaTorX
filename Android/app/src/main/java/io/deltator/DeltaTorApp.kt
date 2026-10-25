@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import io.deltator.routing.RouteStore
 import io.deltator.tunnel.BridgeStore
 import io.deltator.tunnel.CombinedMemorySeed
 import io.deltator.tunnel.ExitNodes
@@ -25,6 +26,7 @@ class DeltaTorApp : Application() {
         AppLog.enabled = Config.loggingEnabled
         TorrcSettings.init(this)
         ExitNodes.init(this)
+        RouteStore.init(this)
         createNotificationChannels()
         BridgeStore.refreshState(this)
         appScope.launch { BridgeStore.autoUpdateIfStale(this@DeltaTorApp) }
@@ -319,6 +321,29 @@ object Config {
     var customBridges: String
         get() = prefs.getString("custom_bridges", "") ?: ""
         set(value) = prefs.edit().putString("custom_bridges", value).apply()
+
+    /**
+     * Whether the route list is applied at all. Off sends every connection
+     * through Tor, whatever the rules say, without losing them.
+     */
+    var routingEnabled: Boolean
+        get() = prefs.getBoolean("routing_enabled", true)
+        set(value) = prefs.edit().putBoolean("routing_enabled", value).apply()
+
+    /** The country whose defaults the route list was last reset to. */
+    var routesCountry: String
+        get() = prefs.getString("routes_country", "ru") ?: "ru"
+        set(value) = prefs.edit().putString("routes_country", value).apply()
+
+    /** Whether the first-launch country picker has been answered. */
+    var routesCountryChosen: Boolean
+        get() = prefs.getBoolean("routes_country_chosen", false)
+        set(value) = prefs.edit().putBoolean("routes_country_chosen", value).apply()
+
+    /** When "Update rules" last succeeded, 0 for never (the bundled lists). */
+    var routesUpdatedAt: Long
+        get() = prefs.getLong("routes_updated_at", 0L)
+        set(value) = prefs.edit().putLong("routes_updated_at", value).apply()
 
 /**
      * Which transports take part in auto mode. Stored as a comma separated set so

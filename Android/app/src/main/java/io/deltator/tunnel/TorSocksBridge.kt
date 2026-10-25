@@ -1,11 +1,17 @@
 package io.deltator.tunnel
 
+import io.deltator.routing.GeoData
+import io.deltator.routing.RouteOutbound
+import io.deltator.routing.Router
 import io.deltator.util.AppLog as Log
 import java.io.BufferedOutputStream
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.io.SequenceInputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -20,7 +26,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Sits between hev-socks5-tunnel and Tor's SOCKS5 proxy:
  * - CONNECT (0x01): chains to Tor SOCKS5 (no auth)
  * - FWD_UDP (0x05) DNS (port 53): DNS-over-TCP through Tor SOCKS5 CONNECT
- * - FWD_UDP (0x05) non-DNS: dropped silently (browser falls back to TCP CONNECT)
+ * - FWD_UDP (0x05) non-DNS: sent straight out when a route says bypass,
+ *   otherwise dropped (Tor carries no UDP; browsers fall back to TCP)
+ *
+ * Routing: with a [Router] installed every connection is matched against the
+ * route list (domain from the request or sniffed, IP, port, protocol) and goes
+ * through Tor, straight out, or nowhere.
  *
  * DNS optimization:
  * - Concurrent: 8-thread pool for parallel DNS resolution
@@ -35,7 +46,22 @@ import java.util.concurrent.atomic.AtomicBoolean
 object TorSocksBridge {
     private const val TAG = "TorSocksBridge"
     @Volatile var debugLogging = false
-    @Volatile var domainRouter: DomainRouter = DomainRouter.DISABLED
+    /**
+     * The compiled route list. Swapping it applies to new connections at once;
+     * cached DNS answers are dropped with it, because a name that now bypasses
+     * Tor must be looked up locally again (and vice versa).
+     */
+    @Volatile var router: Router = Router.DISABLED
+        set(value) {
+            field = value
+            dnsCache.clear()
+        }
+
+    /**
+     * Resolvers of the underlying network, for names a route sends around Tor.
+     * Set by the VPN service from the non-VPN network's link properties.
+     */
+    @Volatile var directDnsServers: List<InetAddress> = emptyList()
     private fun logd(msg: String) { if (debugLogging) Log.d(TAG, msg) }
     private const val BIND_MAX_RETRIES = 10
     private const val BIND_RETRY_DELAY_MS = 200L
@@ -43,6 +69,19 @@ object TorSocksBridge {
     private const val TCP_CONNECT_TIMEOUT_MS = 30000
     private const val DNS_TIMEOUT_MS = 15000
     private const val DNS_CACHE_TTL_MS = 300_000L
+    /** How long a routed connection waits for the client's first bytes. */
+    private const val SNIFF_TIMEOUT_MS = 1000
+    private const val DIRECT_CONNECT_TIMEOUT_MS = 10_000
+    private const val DIRECT_DNS_TIMEOUT_MS = 4000
+    private val SOCKS_OK = byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0)
+    private val SOCKS_NOT_ALLOWED = byteArrayOf(0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0)
+    private val SOCKS_REFUSED = byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0)
+    /** Public resolvers for bypassed names when the network reports none. */
+    private val FALLBACK_DIRECT_DNS = listOf(
+        byteArrayOf(77, 88, 8, 8),      // Yandex
+        byteArrayOf(1, 1, 1, 1),        // Cloudflare
+        byteArrayOf(8, 8, 8, 8)         // Google
+    ).map { InetAddress.getByAddress(it) }
 
     private var torHost: String = "127.0.0.1"
     private var torSocksPort: Int = 0
@@ -281,8 +320,7 @@ object TorSocksBridge {
     }
 
     /**
-     * Handle SOCKS5 CONNECT by chaining through Tor's SOCKS5 proxy (no auth).
-     * With domain routing: sniffs TLS SNI / HTTP Host to decide bypass vs tunnel.
+     * Handle SOCKS5 CONNECT: through Tor, or as the route list says.
      */
     private fun handleConnect(
         destHost: String,
@@ -293,18 +331,25 @@ object TorSocksBridge {
         clientInput: InputStream,
         clientOutput: OutputStream
     ) {
-        val router = domainRouter
-        if (router.enabled) {
-            handleConnectWithRouting(router, destHost, destPort, rawAddr, portBytes, clientSocket, clientInput, clientOutput)
+        val r = router
+        if (r.enabled) {
+            handleConnectWithRouting(r, destHost, destPort, rawAddr, portBytes, clientSocket, clientInput, clientOutput)
             return
         }
-
-        // Original flow — no domain routing
         connectViaTor(destHost, destPort, rawAddr, portBytes, clientSocket, clientInput, clientOutput, sendReply = true)
     }
 
+    /**
+     * Route one CONNECT.
+     *
+     * The client's first bytes are only waited for when a rule needs them: a
+     * protocol rule always does, a domain rule only when the request carries a
+     * bare IP. Waiting means answering the SOCKS handshake first (the client
+     * sends nothing before that), so a failure after the decision shows up as
+     * the connection closing rather than as a SOCKS error.
+     */
     private fun handleConnectWithRouting(
-        router: DomainRouter,
+        r: Router,
         destHost: String,
         destPort: Int,
         rawAddr: ByteArray,
@@ -313,59 +358,62 @@ object TorSocksBridge {
         clientInput: InputStream,
         clientOutput: OutputStream
     ) {
-        var effectiveHost = destHost
+        val literal = GeoData.parseIp(destHost)
+        var host: String? = if (literal == null) destHost else null
+        var protocol: String? = null
         var sniffBuffer: ByteArray? = null
         var sniffLen = 0
-        var wasEarlyReply = false
+        val earlyReply = r.wantsProtocol || (literal != null && r.wantsDomain)
 
-        if (DomainRouter.isIpAddress(destHost)) {
-            // IP address — sniff to recover domain
-            clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+        if (earlyReply) {
+            clientOutput.write(SOCKS_OK)
             clientOutput.flush()
-            clientSocket.soTimeout = 3000
-            wasEarlyReply = true
-
+            clientSocket.soTimeout = SNIFF_TIMEOUT_MS
             val result = ProtocolSniffer.sniff(clientInput)
-            if (result.domain != null) {
-                effectiveHost = result.domain
-                logd("CONNECT: sniffed domain=$effectiveHost from IP=$destHost")
-            }
+            if (result.domain != null) host = result.domain
+            protocol = result.protocol
             sniffBuffer = result.bufferedData
             sniffLen = result.bufferedLength
         }
-
-        if (router.shouldBypass(effectiveHost)) {
-            // Direct connection — bypass tunnel
-            logd("CONNECT: bypassing tunnel for $effectiveHost:$destPort")
-            try {
-                val directSocket = router.createDirectConnection(destHost, destPort)
-                if (!wasEarlyReply) {
-                    clientOutput.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                    clientOutput.flush()
-                }
-                clientSocket.soTimeout = 0
-                val effectiveInput = if (sniffLen > 0)
-                    SequenceInputStream(ByteArrayInputStream(sniffBuffer!!, 0, sniffLen), clientInput)
-                else clientInput
-                bridgeDirect(effectiveInput, clientOutput, directSocket)
-            } catch (e: Exception) {
-                logd("CONNECT: direct connection failed for $effectiveHost:$destPort: ${e.message}")
-                if (!wasEarlyReply) {
-                    try {
-                        clientOutput.write(byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
-                        clientOutput.flush()
-                    } catch (_: Exception) {}
-                }
-            }
-            return
-        }
-
-        // Tunnel path
         clientSocket.soTimeout = 0
-        val effectiveInput = if (sniffLen > 0)
+        val input = if (sniffLen > 0)
             SequenceInputStream(ByteArrayInputStream(sniffBuffer!!, 0, sniffLen), clientInput)
         else clientInput
-        connectViaTor(destHost, destPort, rawAddr, portBytes, clientSocket, effectiveInput, clientOutput, sendReply = !wasEarlyReply)
+
+        when (r.decide(host, literal, destPort, protocol)) {
+            RouteOutbound.BLOCK -> {
+                logd("CONNECT: blocked ${host ?: destHost}:$destPort")
+                if (!earlyReply) {
+                    clientOutput.write(SOCKS_NOT_ALLOWED)
+                    clientOutput.flush()
+                }
+            }
+            RouteOutbound.BYPASS -> {
+                logd("CONNECT: bypass ${host ?: destHost}:$destPort (${protocol ?: "?"})")
+                val direct = try {
+                    // The app is excluded from its own VPN, so a plain socket
+                    // leaves through the underlying network.
+                    Socket().apply {
+                        connect(InetSocketAddress(destHost, destPort), DIRECT_CONNECT_TIMEOUT_MS)
+                        tcpNoDelay = true
+                    }
+                } catch (e: Exception) {
+                    logd("CONNECT: direct connection to $destHost:$destPort failed: ${e.message}")
+                    if (!earlyReply) {
+                        clientOutput.write(SOCKS_REFUSED)
+                        clientOutput.flush()
+                    }
+                    return
+                }
+                if (!earlyReply) {
+                    clientOutput.write(SOCKS_OK)
+                    clientOutput.flush()
+                }
+                bridgeDirect(input, clientOutput, direct)
+            }
+            RouteOutbound.PROXY ->
+                connectViaTor(destHost, destPort, rawAddr, portBytes, clientSocket, input, clientOutput, sendReply = !earlyReply)
+        }
     }
 
     /**
@@ -489,83 +537,221 @@ object TorSocksBridge {
     /**
      * Handle FWD_UDP (cmd 0x05) — same wire format as other bridges.
      * DNS (port 53): DNS-over-TCP through Tor SOCKS5 CONNECT, so no query ever
-     * leaves the device in the clear. Non-DNS UDP: dropped silently.
+     * leaves the device in the clear, except names a route sends around Tor,
+     * which are asked of the local network, and blocked names, which are
+     * answered NXDOMAIN on the spot. Other UDP goes straight out when a route
+     * says bypass and is dropped otherwise.
      *
      * DNS queries are dispatched to a thread pool for concurrent resolution.
      * Responses are cached for 5 minutes to keep repeat lookups off the wire.
      */
     private fun handleFwdUdp(input: InputStream, output: OutputStream) {
-        output.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+        output.write(SOCKS_OK)
         output.flush()
 
         logd("FWD_UDP session established")
+        var relay: UdpDirectRelay? = null
+        try {
+            while (running.get() && !Thread.currentThread().isInterrupted) {
+                val hdr = ByteArray(3)
+                input.readFully(hdr)
 
-        while (running.get() && !Thread.currentThread().isInterrupted) {
-            val hdr = ByteArray(3)
-            input.readFully(hdr)
+                val datLen = ((hdr[0].toInt() and 0xFF) shl 8) or (hdr[1].toInt() and 0xFF)
+                val hdrLen = hdr[2].toInt() and 0xFF
+                val addrLen = hdrLen - 3
 
-            val datLen = ((hdr[0].toInt() and 0xFF) shl 8) or (hdr[1].toInt() and 0xFF)
-            val hdrLen = hdr[2].toInt() and 0xFF
-            val addrLen = hdrLen - 3
+                if (addrLen <= 0 || datLen <= 0) {
+                    Log.w(TAG, "FWD_UDP: invalid header (datLen=$datLen, hdrLen=$hdrLen)")
+                    break
+                }
 
-            if (addrLen <= 0 || datLen <= 0) {
-                Log.w(TAG, "FWD_UDP: invalid header (datLen=$datLen, hdrLen=$hdrLen)")
-                break
-            }
+                val addrBytes = ByteArray(addrLen)
+                input.readFully(addrBytes)
 
-            val addrBytes = ByteArray(addrLen)
-            input.readFully(addrBytes)
+                val payload = ByteArray(datLen)
+                input.readFully(payload)
 
-            val payload = ByteArray(datLen)
-            input.readFully(payload)
+                val dest = parseSocksAddress(addrBytes)
+                if (dest == null) {
+                    Log.w(TAG, "FWD_UDP: failed to parse address")
+                    continue
+                }
 
-            val dest = parseSocksAddress(addrBytes)
-            if (dest == null) {
-                Log.w(TAG, "FWD_UDP: failed to parse address")
-                continue
-            }
-
-            if (dest.second != 53) {
-                // Non-DNS UDP: drop silently
-                continue
-            }
-
-            // Dispatch DNS query to thread pool for concurrent resolution
-            val addrCopy = addrBytes.copyOf()
-            val payloadCopy = payload.copyOf()
-            dnsExecutor.submit {
-                try {
-                    // Check cache first
-                    val cached = getCachedDns(payloadCopy)
-                    val response = if (cached != null) {
-                        logd("DNS: cache hit")
-                        cached
-                    } else {
-                        val remote = resolveThroughTor(payloadCopy)
-                        if (remote != null) cacheDnsResponse(payloadCopy, remote)
-                        remote
+                val r = router
+                if (dest.second != 53) {
+                    if (!r.enabled) continue
+                    val ip = GeoData.parseIp(dest.first) ?: continue
+                    val protocol = if (looksLikeBitTorrentUdp(payload)) ProtocolSniffer.PROTO_BITTORRENT else null
+                    if (r.decide(null, ip, dest.second, protocol) != RouteOutbound.BYPASS) continue
+                    try {
+                        val rl = relay ?: UdpDirectRelay(output).also { relay = it }
+                        rl.send(ip, dest.second, payload)
+                    } catch (e: Exception) {
+                        logd("FWD_UDP: direct send to ${dest.first}:${dest.second} failed: ${e.message}")
                     }
+                    continue
+                }
 
-                    if (response != null && response.isNotEmpty()) {
-                        val respHdr = ByteArray(3)
-                        respHdr[0] = ((response.size shr 8) and 0xFF).toByte()
-                        respHdr[1] = (response.size and 0xFF).toByte()
-                        respHdr[2] = (3 + addrCopy.size).toByte()
-
-                        synchronized(output) {
-                            output.write(respHdr)
-                            output.write(addrCopy)
-                            output.write(response)
-                            output.flush()
+                // Payloads are fresh arrays per frame, so the worker can own them.
+                dnsExecutor.submit {
+                    try {
+                        val response = answerDns(r, payload)
+                        if (response != null && response.isNotEmpty()) {
+                            val respHdr = byteArrayOf(
+                                ((response.size shr 8) and 0xFF).toByte(),
+                                (response.size and 0xFF).toByte(),
+                                (3 + addrBytes.size).toByte()
+                            )
+                            synchronized(output) {
+                                output.write(respHdr)
+                                output.write(addrBytes)
+                                output.write(response)
+                                output.flush()
+                            }
                         }
+                    } catch (e: Exception) {
+                        logd("FWD_UDP: DNS forward failed: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    logd("FWD_UDP: DNS forward failed: ${e.message}")
                 }
             }
+        } finally {
+            relay?.close()
         }
 
         logd("FWD_UDP session ended")
+    }
+
+    /** One DNS answer: cache, then the route list's verdict, then Tor. */
+    private fun answerDns(r: Router, query: ByteArray): ByteArray? {
+        getCachedDns(query)?.let { logd("DNS: cache hit"); return it }
+        val verdict = if (r.enabled) dnsQuestionName(query)?.let { r.decideName(it) } else null
+        val response = when (verdict) {
+            RouteOutbound.BLOCK -> return dnsNxdomain(query)
+            RouteOutbound.BYPASS -> resolveDirect(query) ?: resolveThroughTor(query)
+            else -> resolveThroughTor(query)
+        }
+        if (response != null) cacheDnsResponse(query, response)
+        return response
+    }
+
+    /** The first question's name, or null for anything that is not a plain query. */
+    private fun dnsQuestionName(q: ByteArray): String? {
+        if (q.size < 17 || (q[2].toInt() and 0x80) != 0) return null
+        if ((((q[4].toInt() and 0xFF) shl 8) or (q[5].toInt() and 0xFF)) < 1) return null
+        val sb = StringBuilder()
+        var pos = 12
+        while (pos < q.size) {
+            val n = q[pos].toInt() and 0xFF
+            if (n == 0) return if (sb.isEmpty()) null else sb.toString()
+            if (n and 0xC0 != 0 || pos + 1 + n > q.size) return null
+            if (sb.isNotEmpty()) sb.append('.')
+            sb.append(String(q, pos + 1, n, Charsets.ISO_8859_1))
+            pos += 1 + n
+        }
+        return null
+    }
+
+    /** NXDOMAIN for [query]: header and question echoed, no records. */
+    private fun dnsNxdomain(query: ByteArray): ByteArray? {
+        var pos = 12
+        while (pos < query.size && query[pos].toInt() != 0) pos += 1 + (query[pos].toInt() and 0xFF)
+        val end = pos + 1 + 4
+        if (end > query.size) return null
+        val resp = query.copyOf(end)
+        resp[2] = ((query[2].toInt() and 0x79) or 0x80).toByte()   // QR, keep opcode + RD
+        resp[3] = 0x83.toByte()                                     // RA, NXDOMAIN
+        resp[4] = 0; resp[5] = 1                                    // one question
+        for (i in 6 until 12) resp[i] = 0
+        return resp
+    }
+
+    /** Ask the underlying network's resolvers over plain UDP. */
+    private fun resolveDirect(query: ByteArray): ByteArray? {
+        val servers = directDnsServers.ifEmpty { FALLBACK_DIRECT_DNS }
+        try {
+            DatagramSocket().use { socket ->
+                socket.soTimeout = DIRECT_DNS_TIMEOUT_MS / servers.size.coerceAtLeast(1)
+                val buf = ByteArray(4096)
+                for (server in servers) {
+                    try {
+                        socket.send(DatagramPacket(query, query.size, server, 53))
+                        val packet = DatagramPacket(buf, buf.size)
+                        socket.receive(packet)
+                        if (packet.length >= 12 && buf[0] == query[0] && buf[1] == query[1]) {
+                            logd("DNS: resolved directly via ${server.hostAddress}")
+                            return buf.copyOf(packet.length)
+                        }
+                    } catch (_: Exception) {
+                        // next resolver
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            logd("DNS: direct resolve failed: ${e.message}")
+        }
+        return null
+    }
+
+    /**
+     * BitTorrent over UDP: DHT (a bencoded dictionary), the UDP tracker connect
+     * magic, or a uTP header (version 1, a known type, a known extension).
+     */
+    private fun looksLikeBitTorrentUdp(p: ByteArray): Boolean {
+        if (p.size >= 3 && p[0] == 'd'.code.toByte() && p[1] == '1'.code.toByte() && p[2] == ':'.code.toByte()) return true
+        if (p.size >= 16 && p[0].toInt() == 0 && p[1].toInt() == 0 && p[2].toInt() == 0x04 &&
+            p[3].toInt() == 0x17 && p[4].toInt() == 0x27 && p[5].toInt() == 0x10 &&
+            p[6].toInt() == 0x19 && (p[7].toInt() and 0xFF) == 0x80
+        ) return true
+        if (p.size >= 20) {
+            val b0 = p[0].toInt() and 0xFF
+            if (b0 and 0x0F == 1 && (b0 shr 4) <= 4 && (p[1].toInt() and 0xFF) <= 2) return true
+        }
+        return false
+    }
+
+    /**
+     * Direct UDP for one FWD_UDP session: datagrams out through an unconnected
+     * socket outside the VPN, replies framed back to hev with their source as
+     * the address, the way the protocol expects.
+     */
+    private class UdpDirectRelay(private val output: OutputStream) {
+        private val socket = DatagramSocket()
+
+        init {
+            Thread({
+                val buf = ByteArray(65535)
+                try {
+                    while (!socket.isClosed) {
+                        val packet = DatagramPacket(buf, buf.size)
+                        socket.receive(packet)
+                        val src = packet.address.address
+                        val port = packet.port
+                        val addr = ByteArray(1 + src.size + 2)
+                        addr[0] = if (src.size == 4) 0x01 else 0x04
+                        System.arraycopy(src, 0, addr, 1, src.size)
+                        addr[addr.size - 2] = (port shr 8).toByte()
+                        addr[addr.size - 1] = port.toByte()
+                        val len = packet.length
+                        synchronized(output) {
+                            output.write(byteArrayOf((len shr 8).toByte(), len.toByte(), (3 + addr.size).toByte()))
+                            output.write(addr)
+                            output.write(buf, 0, len)
+                            output.flush()
+                        }
+                    }
+                } catch (_: Exception) {
+                    // socket closed or the session went away
+                } finally {
+                    socket.close()
+                }
+            }, "tor-bridge-udp-direct").apply { isDaemon = true; start() }
+        }
+
+        fun send(ip: ByteArray, port: Int, payload: ByteArray) {
+            socket.send(DatagramPacket(payload, payload.size, InetAddress.getByAddress(ip), port))
+        }
+
+        fun close() = socket.close()
     }
 
     // --- DNS cache ---
