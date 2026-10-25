@@ -28,6 +28,7 @@ import io.deltator.tunnel.TorSocksBridge
 import io.deltator.tunnel.TorrcSettings
 import io.deltator.util.AppLog as Log
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -72,6 +73,11 @@ class TorVpnService : VpnService() {
         private const val VPN_MTU = 1280
         private const val VPN_ADDRESS = "10.255.255.1"
         private const val VPN_ROUTE = "0.0.0.0"
+        // IPv6 has to be captured too. With only the IPv4 route, every IPv6
+        // connection on a dual-stack network went around the tunnel, straight
+        // out with the device's real address.
+        private const val VPN_ADDRESS6 = "fd00::1"
+        private const val VPN_ROUTE6 = "::"
         private const val DEFAULT_DNS = "8.8.8.8"
 
         /** How often the connected tunnel is asked whether Tor can still carry traffic. */
@@ -448,8 +454,10 @@ class TorVpnService : VpnService() {
         // The route list, compiled once per connect and recompiled whenever it is
         // edited, so a rule switched on the Routes screen applies to the next
         // connection without reconnecting.
+        // Compiled while Tor bootstraps, not before: loading the lists takes a
+        // moment and the race does not need them.
         TorSocksBridge.directDnsServers = underlyingDnsServers()
-        TorSocksBridge.router = withContext(Dispatchers.IO) { RouteStore.compile() }
+        val routerJob = serviceScope.async(Dispatchers.IO) { RouteStore.compile() }
         RouteStore.onCompiled = { TorSocksBridge.router = it }
 
         // Step 1: Resolve the bridge lists for the selected mode and start its
@@ -566,6 +574,12 @@ class TorVpnService : VpnService() {
         // below cannot lose a race against a dying socket.
         withContext(Dispatchers.IO) {
             ParallelTorManager.awaitPortFree(proxyHost, proxyPort)
+        }
+        TorSocksBridge.router = try {
+            routerJob.await()
+        } catch (e: Exception) {
+            Log.e(TAG, "route rules failed to compile, everything goes through Tor: ${e.message}")
+            io.deltator.routing.Router.DISABLED
         }
         val bridgeResult = TorSocksBridge.start(
             torSocksPort = w.torSocksPort,
@@ -774,7 +788,8 @@ class TorVpnService : VpnService() {
             socksPort = proxyPort,
             enableUdpTunneling = true,
             mtu = VPN_MTU,
-            ipv4Address = VPN_ADDRESS
+            ipv4Address = VPN_ADDRESS,
+            ipv6Address = VPN_ADDRESS6
         )
         if (tunResult.isFailure) {
             fail(tunResult.exceptionOrNull()?.message ?: "Failed to start tunnel")
@@ -1107,6 +1122,7 @@ class TorVpnService : VpnService() {
                 .setSession("DeltaTor")
                 .setMtu(VPN_MTU)
                 .addAddress(VPN_ADDRESS, 32)
+                .addAddress(VPN_ADDRESS6, 128)
                 .addDnsServer(DEFAULT_DNS)
             val picks = Config.splitTunnelSelected.filter { it != packageName }
             val vpnOnly = Config.splitTunnelMode == Config.SPLIT_MODE_VPN
@@ -1220,7 +1236,7 @@ class TorVpnService : VpnService() {
                         )
                     }
                 }
-                builder.addRoute(VPN_ROUTE, 0)
+                builder.addRoute(VPN_ROUTE, 0).addRoute(VPN_ROUTE6, 0)
                 Log.i(
                     TAG,
                     if (vpnOnly) {
@@ -1244,7 +1260,7 @@ class TorVpnService : VpnService() {
                     return null
                 }
             } else {
-                builder.addRoute(VPN_ROUTE, 0)
+                builder.addRoute(VPN_ROUTE, 0).addRoute(VPN_ROUTE6, 0)
                 Log.i(TAG, "Split tunnel: off, every app goes through Tor")
             }
             builder.setBlocking(false)

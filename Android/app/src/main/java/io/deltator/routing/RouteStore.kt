@@ -85,8 +85,16 @@ object RouteStore {
      * Compile the current list now, on the calling thread; [Router.DISABLED]
      * while routing is switched off.
      */
-    fun compile(): Router =
-        if (Config.routingEnabled) Router.compile(appContext, _rules.value) else Router.DISABLED
+    fun compile(): Router {
+        if (!Config.routingEnabled) return Router.DISABLED
+        val snapshot = _rules.value
+        val stamp = Config.routesUpdatedAt
+        cached?.let { (rules, at, router) -> if (rules === snapshot && at == stamp) return router }
+        return Router.compile(appContext, snapshot).also { cached = Triple(snapshot, stamp, it) }
+    }
+
+    /** The last compile, reused while neither the rules nor the lists changed. */
+    @Volatile private var cached: Triple<List<RouteRule>, Long, Router>? = null
 
     fun setRoutingEnabled(on: Boolean) {
         Config.routingEnabled = on

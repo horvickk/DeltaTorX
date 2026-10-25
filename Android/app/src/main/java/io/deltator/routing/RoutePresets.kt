@@ -56,18 +56,18 @@ object RoutePresets {
         Country("ru", "Russia", RU_DOMAINS, listOf("geoip:ru")),
         Country(
             "by", "Belarus",
-            listOf("geosite:category-by", "domain:by", "domain:xn--90ais"), // .бел
+            listOf("domain:by", "domain:xn--90ais"), // .бел
             listOf("geoip:by")
         ),
         Country(
             "kz", "Kazakhstan",
-            listOf("geosite:category-kz", "domain:kz", "domain:xn--80ao21a"), // .қаз
+            listOf("domain:kz", "domain:xn--80ao21a"), // .қаз
             listOf("geoip:kz")
         ),
         Country("uz", "Uzbekistan", listOf("domain:uz"), listOf("geoip:uz")),
         Country(
             "ua", "Ukraine",
-            listOf("geosite:category-ua", "domain:ua", "domain:xn--j1amh"), // .укр
+            listOf("domain:ua", "domain:xn--j1amh"), // .укр
             listOf("geoip:ua")
         ),
         Country(
@@ -80,7 +80,7 @@ object RoutePresets {
             listOf("geosite:cn", "geosite:geolocation-cn", "domain:cn", "domain:xn--fiqs8s"), // .中国
             listOf("geoip:cn")
         ),
-        Country("tr", "Turkey", listOf("geosite:category-tr", "domain:tr"), listOf("geoip:tr")),
+        Country("tr", "Turkey", listOf("domain:tr"), listOf("geoip:tr")),
         Country("tm", "Turkmenistan", listOf("domain:tm"), listOf("geoip:tm"))
     )
 

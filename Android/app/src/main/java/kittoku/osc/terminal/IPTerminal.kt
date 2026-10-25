@@ -46,6 +46,13 @@ internal class IPTerminal(private val bridge: SharedBridge) {
         }
 
         bridge.builder!!.addRoute("0.0.0.0", 0)
+        if (!bridge.PPP_IPv6_ENABLED) {
+            // Capture IPv6 even though the hub does not carry it: the outgoing
+            // side drops it, which is what keeps it from leaving the device
+            // outside the chain with the real address. Apps fall back to IPv4.
+            bridge.builder!!.addAddress("fd00::2", 128)
+            bridge.builder!!.addRoute("::", 0)
+        }
         bridge.builder!!.setMtu(bridge.PPP_MTU)
         bridge.builder!!.setBlocking(true)
 

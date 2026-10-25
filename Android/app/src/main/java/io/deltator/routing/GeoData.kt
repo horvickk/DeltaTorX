@@ -46,13 +46,18 @@ object GeoData {
      */
     fun loadGeosite(context: Context, specs: Set<String>): Map<String, List<Domain>> {
         if (specs.isEmpty()) return emptyMap()
-        val byCode = specs.groupBy { it.substringBefore('@') }
-        val out = HashMap<String, List<Domain>>()
         val downloaded = File(dir(context), GEOSITE_FILE)
         val sources = buildList<() -> InputStream> {
             if (downloaded.isFile) add { downloaded.inputStream() }
             add { context.assets.open(ASSET_GEOSITE) }
         }
+        return loadGeosite(sources, specs)
+    }
+
+    /** [loadGeosite] over explicit sources, tried in order per code. */
+    internal fun loadGeosite(sources: List<() -> InputStream>, specs: Set<String>): Map<String, List<Domain>> {
+        val byCode = specs.groupBy { it.substringBefore('@') }
+        val out = HashMap<String, List<Domain>>()
         val missing = byCode.keys.toMutableSet()
         for (open in sources) {
             if (missing.isEmpty()) break
@@ -75,15 +80,27 @@ object GeoData {
     /** Ranges for each wanted code (lower case, no `geoip:`). */
     fun loadGeoip(context: Context, codes: Set<String>): Map<String, IpSet> {
         if (codes.isEmpty()) return emptyMap()
-        val out = HashMap<String, IpSet>()
-        val missing = codes.toMutableSet()
-        if (missing.remove("private")) out["private"] = IpSet.PRIVATE
-
         val downloaded = File(dir(context), GEOIP_FILE)
         val sources = buildList<() -> InputStream> {
             if (downloaded.isFile) add { downloaded.inputStream() }
             add { context.assets.open(ASSET_GEOIP) }
         }
+        val out = HashMap(loadGeoip(sources, codes))
+        val missing = codes.toMutableSet().apply { removeAll(out.keys) }
+        val countries = missing.filter { it.length == 2 }.toSet()
+        if (countries.isNotEmpty()) {
+            out += countryRanges(context, countries)
+            missing -= out.keys
+        }
+        if (missing.isNotEmpty()) Log.w(TAG, "geoip codes not found: ${missing.joinToString()}")
+        return out
+    }
+
+    /** geoip.dat lookups over explicit sources; `private` is built in. */
+    internal fun loadGeoip(sources: List<() -> InputStream>, codes: Set<String>): Map<String, IpSet> {
+        val out = HashMap<String, IpSet>()
+        val missing = codes.toMutableSet()
+        if (missing.remove("private")) out["private"] = IpSet.PRIVATE
         for (open in sources) {
             if (missing.isEmpty()) break
             try {
@@ -97,12 +114,6 @@ object GeoData {
                 Log.w(TAG, "geoip source unreadable: ${e.message}")
             }
         }
-        val countries = missing.filter { it.length == 2 }.toSet()
-        if (countries.isNotEmpty()) {
-            out += countryRanges(context, countries)
-            missing -= out.keys
-        }
-        if (missing.isNotEmpty()) Log.w(TAG, "geoip codes not found: ${missing.joinToString()}")
         return out
     }
 
@@ -194,7 +205,7 @@ object GeoData {
                     else -> d.skipField(t)
                 }
             }
-            if (value.isNotEmpty()) out += RawDomain(type, value.lowercase(), attrs ?: emptySet())
+            if (value.isNotEmpty()) out += RawDomain(type, value, attrs ?: emptySet())
         }
         return out
     }

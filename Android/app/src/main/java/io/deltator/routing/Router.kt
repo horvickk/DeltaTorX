@@ -90,7 +90,17 @@ class Router private constructor(private val rules: List<Compiled>) {
          * main thread. Rules whose every list failed to load still compile, as
          * rules that never match, rather than as rules that match everything.
          */
-        fun compile(context: Context, list: List<RouteRule>): Router {
+        fun compile(context: Context, list: List<RouteRule>): Router = compile(
+            list,
+            { GeoData.loadGeosite(context, it) },
+            { GeoData.loadGeoip(context, it) }
+        )
+
+        internal fun compile(
+            list: List<RouteRule>,
+            loadSites: (Set<String>) -> Map<String, List<GeoData.Domain>>,
+            loadIps: (Set<String>) -> Map<String, IpSet>
+        ): Router {
             val active = list.filter { it.enabled && !it.isEmpty }
             if (active.isEmpty()) return DISABLED
             val started = System.currentTimeMillis()
@@ -101,8 +111,8 @@ class Router private constructor(private val rules: List<Compiled>) {
                 r.domains.forEach { d -> prefixed(d, "geosite:")?.let { siteSpecs += it.lowercase() } }
                 r.ips.forEach { i -> prefixed(i, "geoip:")?.let { ipCodes += it.lowercase() } }
             }
-            val sites = GeoData.loadGeosite(context, siteSpecs)
-            val geoips = GeoData.loadGeoip(context, ipCodes)
+            val sites = loadSites(siteSpecs)
+            val geoips = loadIps(ipCodes)
 
             val compiled = active.map { r ->
                 Compiled(
@@ -186,14 +196,27 @@ class DomainMatcher private constructor(
         private val regexes = LinkedHashSet<String>()
 
         fun add(type: Int, value: String) {
-            val v = value.trim().lowercase()
-            if (v.isEmpty()) return
             when (type) {
-                GeoData.TYPE_FULL -> full += Router.normalizeHost(v)
-                GeoData.TYPE_DOMAIN -> suffix += Router.normalizeHost(v.trimStart('.'))
-                GeoData.TYPE_KEYWORD -> keywords += v
-                GeoData.TYPE_REGEX -> regexes += value.trim()
+                GeoData.TYPE_FULL -> host(value)?.let { full += it }
+                GeoData.TYPE_DOMAIN -> host(value.trimStart('.'))?.let { suffix += it }
+                GeoData.TYPE_KEYWORD -> value.trim().lowercase().ifEmpty { null }?.let { keywords += it }
+                GeoData.TYPE_REGEX -> value.trim().ifEmpty { null }?.let { regexes += it }
             }
+        }
+
+        /**
+         * List entries are almost always clean lower-case ASCII already; only the
+         * odd one pays for [Router.normalizeHost]. With 150 000 ad domains this is
+         * most of the compile time.
+         */
+        private fun host(v: String): String? {
+            if (v.isEmpty()) return null
+            for (ch in v) {
+                if (ch !in 'a'..'z' && ch !in '0'..'9' && ch != '-' && ch != '.' && ch != '_') {
+                    return Router.normalizeHost(v).ifEmpty { null }
+                }
+            }
+            return if (v.endsWith('.')) v.trimEnd('.').ifEmpty { null } else v
         }
 
         /** A typed entry: `domain:`, `full:`, `keyword:`, `regexp:` or a bare name. */

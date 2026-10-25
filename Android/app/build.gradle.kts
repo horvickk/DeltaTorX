@@ -1,5 +1,12 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Properties
+import java.io.BufferedInputStream
+import java.io.DataInputStream
+import java.io.EOFException
+import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.URI
 
 plugins {
     id("com.android.application")
@@ -137,6 +144,11 @@ android {
         }
     }
 
+    // Unit tests touch AppLog, which forwards to android.util.Log.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     // Build hev-socks5-tunnel (tun2socks) with ndk-build
     externalNativeBuild {
         ndkBuild {
@@ -144,6 +156,114 @@ android {
         }
     }
 }
+
+// --- Route lists ---------------------------------------------------------------
+// The Routes screen's geosite:/geoip: entries need data that works offline from
+// the first launch. At build time the current runetfreedom geosite.dat/geoip.dat
+// are streamed and only the lists the country presets use are kept, each list
+// whole (the full files are ~90 MB, almost all of it lists no preset names). The
+// app's "Update rules" button fetches fresher copies the same way at runtime.
+// Keep these sets in step with routing/RoutePresets.kt.
+val geoSiteCodes = setOf(
+    "category-ads-all", "private",
+    "category-ru", "category-gov-ru", "ru-available-only-inside", "yandex", "vk", "mailru",
+    "category-ir",
+    "cn", "geolocation-cn"
+)
+val geoIpCodes = setOf("private", "ru", "by", "kz", "uz", "ua", "ir", "cn", "tr", "tm")
+val geoBase = "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/"
+val geoAssetsDir = layout.buildDirectory.dir("generated/geoAssets")
+
+abstract class FetchGeoListsTask : DefaultTask() {
+    @get:Input abstract val baseUrl: Property<String>
+    @get:Input abstract val siteCodes: SetProperty<String>
+    @get:Input abstract val ipCodes: SetProperty<String>
+    @get:OutputDirectory abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun fetch() {
+        val dir = outputDir.get().asFile.resolve("geo").apply { mkdirs() }
+        trim("geosite.dat", siteCodes.get(), dir.resolve("geosite.dat"))
+        trim("geoip.dat", ipCodes.get(), dir.resolve("geoip.dat"))
+    }
+
+    /** Stream [name] and copy the top-level entries whose code is wanted. */
+    private fun trim(name: String, wanted: Set<String>, target: File) {
+        var lastError: Exception? = null
+        repeat(3) { attempt ->
+            try {
+                val conn = URI(baseUrl.get() + name).toURL().openConnection()
+                conn.connectTimeout = 30_000
+                conn.readTimeout = 60_000
+                val kept = mutableListOf<String>()
+                DataInputStream(BufferedInputStream(conn.getInputStream(), 1 shl 16)).use { input ->
+                    target.outputStream().buffered().use { out ->
+                        while (kept.size < wanted.size) {
+                            val tag = input.read()
+                            if (tag < 0) break
+                            check(tag == 0x0A) { "unexpected tag $tag in $name" }
+                            val len = varint(input).toInt()
+                            val entry = ByteArray(len).also { input.readFully(it) }
+                            // field 1 (the code) comes first: 0x0A, length, bytes
+                            var p = 1
+                            var codeLen = 0
+                            var shift = 0
+                            while (true) {
+                                val b = entry[p++].toInt() and 0xFF
+                                codeLen = codeLen or ((b and 0x7F) shl shift)
+                                shift += 7
+                                if (b < 0x80) break
+                            }
+                            val code = String(entry, p, codeLen, Charsets.UTF_8).lowercase()
+                            if (code in wanted) {
+                                out.write(0x0A)
+                                writeVarint(out, len)
+                                out.write(entry)
+                                kept += code
+                            }
+                        }
+                    }
+                }
+                val missing = wanted - kept.toSet()
+                logger.lifecycle("geo: $name -> ${target.length() / 1024} KB, ${kept.size} list(s)" +
+                    if (missing.isEmpty()) "" else ", not in source: ${missing.sorted().joinToString()}")
+                return
+            } catch (e: Exception) {
+                lastError = e
+                logger.warn("geo: $name attempt ${attempt + 1} failed: ${e.message}")
+            }
+        }
+        target.delete()
+        throw GradleException("Could not fetch $name for the bundled route lists", lastError)
+    }
+
+    private fun varint(input: InputStream): Long {
+        var result = 0L
+        var shift = 0
+        while (true) {
+            val b = input.read()
+            if (b < 0) throw EOFException()
+            result = result or ((b and 0x7F).toLong() shl shift)
+            if (b < 0x80) return result
+            shift += 7
+        }
+    }
+
+    private fun writeVarint(out: OutputStream, value: Int) {
+        var v = value
+        while (v >= 0x80) { out.write((v and 0x7F) or 0x80); v = v ushr 7 }
+        out.write(v)
+    }
+}
+
+val fetchGeoLists = tasks.register<FetchGeoListsTask>("fetchGeoLists") {
+    baseUrl.set(geoBase)
+    siteCodes.set(geoSiteCodes)
+    ipCodes.set(geoIpCodes)
+    outputDir.set(geoAssetsDir)
+}
+
+android.sourceSets.getByName("main").assets.srcDir(fetchGeoLists.map { it.outputDir })
 
 kotlin {
     compilerOptions {
@@ -184,4 +304,7 @@ dependencies {
 
     // Core
     implementation("androidx.core:core-ktx:1.17.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

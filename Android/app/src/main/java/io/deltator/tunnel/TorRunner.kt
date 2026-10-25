@@ -614,7 +614,9 @@ class TorRunner(
 
         val torrcFile = File(dataDir, "torrc")
         val common = buildString {
-            appendLine("SocksPort $listenHost:$torSocksPort")
+            // IPv6Traffic: the VPN carries IPv6 too, and without the flag Tor
+            // refuses every IPv6 destination an app connects to.
+            appendLine("SocksPort $listenHost:$torSocksPort IPv6Traffic")
             appendLine("DataDirectory ${dataDir.absolutePath}")
             appendLine("UseBridges ${if (isDirect) 0 else 1}")
             val geoipFile = File(dataDir, "geoip")

@@ -762,12 +762,16 @@ object TorSocksBridge {
      */
     private fun dnsCacheKey(query: ByteArray): String {
         if (query.size <= 2) return ""
-        val sb = StringBuilder((query.size - 2) * 2)
+        val out = CharArray((query.size - 2) * 2)
         for (i in 2 until query.size) {
-            sb.append("%02x".format(query[i]))
+            val v = query[i].toInt() and 0xFF
+            out[(i - 2) * 2] = HEX[v ushr 4]
+            out[(i - 2) * 2 + 1] = HEX[v and 0x0F]
         }
-        return sb.toString()
+        return String(out)
     }
+
+    private val HEX = "0123456789abcdef".toCharArray()
 
     private fun getCachedDns(query: ByteArray): ByteArray? {
         val key = dnsCacheKey(query)

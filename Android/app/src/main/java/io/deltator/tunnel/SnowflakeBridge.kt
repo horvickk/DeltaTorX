@@ -575,7 +575,9 @@ object SnowflakeBridge {
 
         // Common torrc settings (UseBridges omitted for direct mode)
         val common = buildString {
-            appendLine("SocksPort $listenHost:$torSocksPort")
+            // IPv6Traffic: the VPN carries IPv6 too, and without the flag Tor
+            // refuses every IPv6 destination an app connects to.
+            appendLine("SocksPort $listenHost:$torSocksPort IPv6Traffic")
             appendLine("DataDirectory ${torDataDir.absolutePath}")
             if (!isDirect) appendLine("UseBridges 1")
             // Only reference GeoIP files if they exist

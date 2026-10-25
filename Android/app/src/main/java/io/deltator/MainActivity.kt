@@ -343,7 +343,7 @@ private fun chainIntroNoticeBlocks(): List<AppState.NoticeBlock> = listOf(
 // store panel. Dark, borderless, owner-drawn and fully professional.
 // ---------------------------------------------------------------------------
 
-private enum class Screen { Main, Log, SplitTunnel }
+private enum class Screen { Main, Log, SplitTunnel, Routes }
 
 @Composable
 fun DeltaTorScreen(
@@ -361,6 +361,11 @@ fun DeltaTorScreen(
     val goMain = remember { { screen = Screen.Main } }
     val goLog = remember { { screen = Screen.Log } }
     val goSplit = remember { { screen = Screen.SplitTunnel } }
+    val goRoutes = remember { { screen = Screen.Routes } }
+    // Asked once, on the first launch of a build that has routes, before the
+    // first connect can happen on rules the user never saw.
+    var askCountry by remember { mutableStateOf(!Config.routesCountryChosen) }
+    if (askCountry) FirstRunCountryDialog(onDone = { askCountry = false })
 
     Crossfade(targetState = screen, label = "screen") { s ->
         when (s) {
@@ -371,10 +376,12 @@ fun DeltaTorScreen(
                 onChainPick = onChainPick,
                 onUpdateBridges = onUpdateBridges,
                 onOpenLog = goLog,
-                onOpenSplitTunnel = goSplit
+                onOpenSplitTunnel = goSplit,
+                onOpenRoutes = goRoutes
             )
             Screen.Log -> LogScreen(onBack = goMain)
             Screen.SplitTunnel -> SplitTunnelScreen(onBack = goMain)
+            Screen.Routes -> RoutesScreen(onBack = goMain)
         }
     }
 }
@@ -387,7 +394,8 @@ private fun MainScreen(
     onChainPick: (host: String, port: Int) -> Unit,
     onUpdateBridges: () -> Unit,
     onOpenLog: () -> Unit,
-    onOpenSplitTunnel: () -> Unit
+    onOpenSplitTunnel: () -> Unit,
+    onOpenRoutes: () -> Unit
 ) {
     val state by AppState.state.collectAsStateWithLifecycle()
     val release by AppState.releaseState.collectAsStateWithLifecycle()
@@ -525,7 +533,8 @@ private fun MainScreen(
                     onClose = closeDrawer,
                     onUpdateBridges = onUpdateBridges,
                     onOpenLog = { closeDrawer(); onOpenLog() },
-                    onOpenSplitTunnel = { closeDrawer(); onOpenSplitTunnel() }
+                    onOpenSplitTunnel = { closeDrawer(); onOpenSplitTunnel() },
+                    onOpenRoutes = { closeDrawer(); onOpenRoutes() }
                 )
             }
         }
@@ -669,7 +678,7 @@ private fun WarnIcon(modifier: Modifier = Modifier, color: Color = DeltaTor.Ambe
     }
 }
 
-private const val REPO_URL = "https://github.com/Delta-Kronecker/Delta-Tor"
+private const val REPO_URL = "https://github.com/horvickk/DeltaTor-"
 
 /**
  * How many countries the picker leads with, by exit bandwidth.
@@ -937,9 +946,12 @@ private fun ControlDrawer(
     onClose: () -> Unit,
     onUpdateBridges: () -> Unit,
     onOpenLog: () -> Unit,
-    onOpenSplitTunnel: () -> Unit
+    onOpenSplitTunnel: () -> Unit,
+    onOpenRoutes: () -> Unit
 ) {
     val uriHandler = LocalUriHandler.current
+    val routeRules by io.deltator.routing.RouteStore.rules.collectAsStateWithLifecycle()
+    val routeCountry by io.deltator.routing.RouteStore.country.collectAsStateWithLifecycle()
     val clipboard = LocalClipboard.current
     val bridges by AppState.bridgeState.collectAsStateWithLifecycle()
     // Not `AppState.state`: the bootstrap writes a new VpnState on every runner
@@ -1204,6 +1216,15 @@ private fun ControlDrawer(
                     }
                 }
             }
+            item(key = "div-routes") { DividerLine() }
+            item(key = "routes-head") {
+                DrawerSection(
+                    title = "ROUTES",
+                    summary = "${io.deltator.routing.RoutePresets.displayName(routeCountry)} \u00b7 " +
+                        "${routeRules.count { it.enabled }} of ${routeRules.size} rules on",
+                    onClick = onOpenRoutes
+                )
+            }
             item(key = "div-adv") { DividerLine() }
             item(key = "adv-head") {
                 DrawerSection(
@@ -1281,7 +1302,7 @@ private fun rememberActiveLoop(
  * else itself.
  */
 @Composable
-private fun ToggleSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+internal fun ToggleSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     val shift by animateDpAsState(
         targetValue = if (checked) 22.dp else 4.dp,
         animationSpec = tween(160),
@@ -1354,7 +1375,7 @@ private fun DrawerSection(
         if (onClick != null) {
             Spacer(Modifier.width(12.dp))
             Text(
-                if (expanded == true) "HIDE" else "SHOW",
+                when (expanded) { true -> "HIDE"; false -> "SHOW"; null -> "OPEN" },
                 style = MaterialTheme.typography.labelSmall.copy(
                     letterSpacing = 1.2.sp,
                     fontWeight = FontWeight.Bold
@@ -3302,7 +3323,7 @@ private fun BackArrowIcon(modifier: Modifier = Modifier, color: Color = DeltaTor
 }
 
 @Composable
-private fun ScreenTopBar(
+internal fun ScreenTopBar(
     title: String,
     onBack: () -> Unit,
     action: (@Composable () -> Unit)? = null
@@ -3423,7 +3444,7 @@ private fun UpdateBanner(
 }
 
 @Composable
-private fun DividerLine() {
+internal fun DividerLine() {
     Box(
         Modifier
             .fillMaxWidth()
@@ -3621,7 +3642,7 @@ private fun Float.format1(): String {
     return "${v / 10}.${v % 10}"
 }
 
-private fun flagEmoji(code: String): String {
+internal fun flagEmoji(code: String): String {
     if (code.length != 2) return "\uD83C\uDF10"
     val sb = StringBuilder()
     for (c in code.uppercase()) {
@@ -3672,7 +3693,7 @@ private class AdvancedForm {
 }
 
 @Composable
-private fun AdvancedFieldColors() = OutlinedTextFieldDefaults.colors(
+internal fun AdvancedFieldColors() = OutlinedTextFieldDefaults.colors(
     focusedBorderColor = DeltaTor.AccentLight,
     unfocusedBorderColor = DeltaTor.BorderLight,
     focusedContainerColor = DeltaTor.Surface,

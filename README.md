@@ -1,6 +1,6 @@
 # DeltaTor
 
-DeltaTor is a free Tor client for Android and Windows built on one idea: **connecting should
+DeltaTor is a free Tor client for Android built on one idea: **connecting should
 just work, and it should be fast — even on networks that try to block Tor.** Instead of
 gambling on a single bridge, it races several connection methods at the same time, it
 remembers which bridges actually worked for you, and it runs a speed-tuned Tor core with
@@ -61,6 +61,23 @@ single-transport connect. If a race ends with nothing working and Snowflake was 
 the racers, the app offers to enable it in one tap — Snowflake is often the one transport
 that still gets through on heavily filtered networks.
 
+### Routes, NekoBox style
+
+- **Country defaults** — on first launch the app asks which country you are in and fills
+  the route list the way NekoBox does: BitTorrent goes direct, ads are blocked, and the
+  country's own sites (by domain and by IP) bypass Tor. For Russia that is
+  `geosite:category-ru`, `category-gov-ru`, `ru-available-only-inside`, Yandex, VK and
+  Mail.ru, every Russian TLD (`.ru .su .рф .москва .рус .дети .онлайн .сайт .орг .ком
+  .moscow .tatar .yandex`) and `geoip:ru`.
+- **Your own rules** — domains (`geosite:`, `domain:`, `full:`, `keyword:`, `regexp:`),
+  IPs (`geoip:`, CIDR), ports and protocols (`bittorrent`, `tls`, `http`), each sent to
+  Proxy (Tor), Bypass or Block. First match wins; edits apply without reconnecting.
+- **How it decides** — the site name is read from TLS SNI / HTTP Host, blocked names
+  fail at DNS, bypassed names are resolved by your local network so they get domestic
+  addresses, and UDP to bypassed addresses goes direct instead of being dropped.
+- **Lists** — the runetfreedom `geosite.dat`/`geoip.dat` lists the presets use are
+  bundled at build time; *Update rules* fetches fresh ones.
+
 ### Everything else
 
 - **Exit country, live** — pick any countries; the app steers even *existing* circuits
@@ -77,34 +94,27 @@ that still gets through on heavily filtered networks.
   with a bundled offline copy, per-mode bridge stats, and a zip export of the working
   list to move a known-good setup to another device.
 - **Built-in updater** — checks for new releases, downloads in the background with a
-  progress banner, and installs by itself; no browser needed.
+  progress banner, and installs by itself; no browser needed. The build downloads the route lists from runetfreedom (`fetchGeoLists`), so it
+needs network access.
 - **Stays out of your way** — live up/down speed and totals in the notification (even
   with the app swiped away, with disconnect actions right in the notification), a
   per-transport log viewer with filters, and a first-run notice in Persian, English and
   Russian.
-- **A portable Windows twin** — the same app, same race engine, same memory and settings,
-  with system-proxy and full-tunnel modes and a tray icon, shipped as a zip you unpack
-  anywhere.
 - **No accounts, no analytics, no telemetry, no crash reporting** on the main builds.
 
 ## Install
 
 Grab the asset you need from the
-[releases page](https://github.com/Delta-Kronecker/Delta-Tor/releases).
+[releases page](https://github.com/horvickk/DeltaTor-/releases).
 
 | Asset | Use it on | Size |
 |---|---|---|
 | `deltator-vX.Y.Z-arm64-v8a.apk` | almost every phone and tablet made in the last decade | ~22 MB |
 | `deltator-vX.Y.Z-armeabi-v7a.apk` | 32-bit ARM devices | ~22 MB |
 | `deltator-vX.Y.Z-universal.apk` | anything else, carries every ABI | ~38 MB |
-| `deltator-vX.Y.Z-windows-x64.zip` | Windows 10/11 on 64-bit Intel/AMD | ~40 MB |
 
-Requirements: Android 7.0 (API 24) or newer, or 64-bit Windows 10/11. `x86` Android payloads
+Requirements: Android 7.0 (API 24) or newer. `x86` Android payloads
 only contain the tunnel component, so the app is meant for real ARM devices, not emulators.
-
-The Windows zip is portable: unpack it anywhere and run `DeltaTor.exe` — all state lives
-next to the exe. Full-tunnel mode asks Windows for administrator rights when it starts
-(the route table and the TUN adapter need them); the other modes run without elevation.
 
 ## Using the app (Android)
 
@@ -120,18 +130,6 @@ next to the exe. Full-tunnel mode asks Windows for administrator rights when it 
   editor, and the connection log with per-transport filters.
 - **Drawer** holds the location picker, the connection mode (VPN / proxy-only), split
   tunneling and the rest.
-
-## Windows
-
-The Windows client is the same app — same race engine, same memory runner, same settings —
-ported to .NET 8 / WinForms and shipped as a portable zip:
-
-- **System proxy** (default) — Tor runs and the system points at it; no elevation needed.
-- **Full tunnel** — the whole machine routes through Tor over a TUN adapter, with bypass
-  routes for Tor's own traffic so the tunnel never loops into itself. Asks for elevation.
-- **Tray icon** with live state, actions and update notices; minimize-to-tray.
-- **Known limitation:** Snowflake does not work through the Windows full tunnel (its
-  STUN/DTLS peers cannot be bypassed reliably); use system-proxy mode for Snowflake.
 
 ## Technical notes
 
@@ -206,18 +204,11 @@ day in the background, direct first and from behind Tor if the direct route is c
 opening the sheet with an empty list triggers a fetch, with a retry line if both routes
 fail.
 
-### What is inside the apps
+### What is inside the app
 
 On Android, `libtor` (the fork), `libobfs4proxy` (lyrebird) and `hev-socks5-tunnel`
 (tun2socks) are compiled into the APK with the NDK — no external Tor install, no companion
-app. On Windows, both platforms run the same fork core: the `tor-windows-x86_64` build from
-the [Delta-Kronecker/tor](https://github.com/Delta-Kronecker/tor) releases overlays the
-pinned official Tor Expert Bundle (which still provides lyrebird and the bundle layout),
-verified against the digest the release publishes; `wintun.dll` comes from wintun.net. All
-of it is fetched and SHA-256 verified at build time (`Windows/fetch-binaries.ps1`), never
-committed, and `hev-socks5-tunnel.dll` is built in CI from the same vendored sources with
-MinGW. The app's own traffic is excluded from its tunnel on both platforms
-(`addDisallowedApplication` on Android, per-destination `/32` bypass routes on Windows).
+app. The app's own traffic is excluded from its tunnel (`addDisallowedApplication`).
 
 ### Building
 
@@ -238,30 +229,15 @@ Release signing reads the keystore from `ANDROID_KEYSTORE_FILE` plus the
 `keystore.properties` at the Gradle root (`Android/keystore.properties`). Never commit a
 keystore.
 
-The Windows app builds with the .NET SDK 8 after the binaries and the native tunnel DLL
-exist:
-
-```powershell
-./Windows/fetch-binaries.ps1              # official bundle + fork core + wintun, verified
-bash Windows/native/build-hev.sh          # from an MSYS2 shell: builds hev-socks5-tunnel.dll
-dotnet build Windows/DeltaTor.sln -c Release
-```
-
-Windows release code signing reads `WINDOWS_CERT_BASE64` plus `WINDOWS_CERT_PASSWORD`; the
-signer certificate's SHA-256 is pinned in `Windows/release-signing-cert.sha256` and the
-release workflow fails closed until it matches. Never commit the pfx.
-
 ### CI
 
 | Workflow | Trigger | Does |
 |---|---|---|
 | `android-build.yml` | push to `main`/`android`/`test`, manual | debug APK, sources and native symbols as artifacts |
-| `windows-build.yml` | push to `main`/`test`, PRs, manual | portable Windows zip, sources and native symbols as artifacts |
 | `release.yml` | tag `v*`, manual with a tag input | signed APKs, signature verification, GitHub release |
-| `windows-release.yml` | tag `v*`, manual with a tag input | signed Windows zip (Authenticode + signer pin), GitHub release |
 
 All workflows install their own SDK/build tools and pinned toolchain, so no runner setup is
-needed. One `v*` tag publishes both platforms' assets to the same GitHub release.
+needed.
 
 ### Privacy
 
