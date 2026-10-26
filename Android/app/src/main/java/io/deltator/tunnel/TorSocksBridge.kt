@@ -345,7 +345,9 @@ object TorSocksBridge {
         clientOutput: OutputStream
     ) {
         val r = router
-        if (r.enabled) {
+        // Onion services only exist inside Tor: a placeholder address or an
+        // onion name never goes anywhere else, whatever the route list says.
+        if (r.enabled && !isOnion(destHost)) {
             handleConnectWithRouting(r, destHost, destPort, rawAddr, portBytes, clientSocket, clientInput, clientOutput)
             return
         }
@@ -651,7 +653,8 @@ object TorSocksBridge {
     /** One DNS answer: cache, then the route list's verdict, then Tor. */
     private fun answerDns(r: Router, query: ByteArray): ByteArray? {
         getCachedDns(query)?.let { logd("DNS: cache hit"); return it }
-        val verdict = if (r.enabled) dnsQuestionName(query)?.let { r.decideName(it) } else null
+        val name = dnsQuestionName(query)
+        val verdict = if (r.enabled && name != null && !isOnion(name)) r.decideName(name) else null
         val response = when (verdict) {
             RouteOutbound.BLOCK -> return dnsNxdomain(query)
             RouteOutbound.BYPASS -> {
@@ -682,6 +685,17 @@ object TorSocksBridge {
             pos += 1 + n
         }
         return null
+    }
+
+    private val ONION_NET = io.deltator.routing.IpSet.Builder()
+        .apply { addText(TorRunner.ONION_VIRTUAL_NET) }.build()
+
+    /** An onion name, or one of the placeholder addresses Tor maps them to. */
+    private fun isOnion(host: String): Boolean {
+        val h = host.lowercase().trimEnd('.')
+        if (h.endsWith(".onion")) return true
+        val ip = GeoData.parseIp(h) ?: return false
+        return ONION_NET.contains(ip)
     }
 
     /** QTYPE of the first question, or -1. */
@@ -866,6 +880,12 @@ object TorSocksBridge {
      */
     private fun resolveThroughTor(payload: ByteArray): ByteArray? {
         val qtype = dnsQuestionType(payload)
+        // Onion names are only mapped to IPv4 placeholders; an AAAA answer
+        // would be a link-local fake that never reaches the tunnel, so say
+        // "no IPv6 for this name" and the app uses the IPv4 one.
+        if (qtype == 28 && dnsQuestionName(payload)?.lowercase()?.trimEnd('.')?.endsWith(".onion") == true) {
+            return dnsNoData(payload)
+        }
         if (qtype == 1 || qtype == 28) {
             resolveViaDnsPort(payload)?.let { return it }
         }

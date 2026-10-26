@@ -628,6 +628,16 @@ class TorRunner(
             // refuses every IPv6 destination an app connects to.
             appendLine("SocksPort $listenHost:$torSocksPort IPv6Traffic")
             appendLine("DNSPort $listenHost:$dnsPort IPv6Traffic")
+            // .onion has no address in DNS, so through the VPN a browser could
+            // never open one: it asks for an IP first and gets nothing. With
+            // automapping the DNSPort hands out a placeholder from this range,
+            // remembers the name behind it, and a connection to that address
+            // over SOCKS is sent to the onion service. The default range is
+            // loopback, which apps never route into the tunnel; 10.64.0.0/10
+            // is captured by it and stays clear of the VPN's own 10.255.255.1.
+            appendLine("AutomapHostsOnResolve 1")
+            appendLine("AutomapHostsSuffixes .onion")
+            appendLine("VirtualAddrNetworkIPv4 $ONION_VIRTUAL_NET")
             appendLine("DataDirectory ${dataDir.absolutePath}")
             appendLine("UseBridges ${if (isDirect) 0 else 1}")
             val geoipFile = File(dataDir, "geoip")
@@ -841,6 +851,8 @@ class TorRunner(
         private const val FRESH_MARKER = "(fresh): \$"
         private const val DNSTT_PREFIX = "dnstt"
         private val WHITESPACE = Regex("\\s+")
+        /** Where .onion names are mapped; must stay inside the VPN's routes. */
+        const val ONION_VIRTUAL_NET = "10.64.0.0/10"
         private val BOOTSTRAPPED = Regex("Bootstrapped (\\d+)%")
         private val PLUGGABLE_TRANSPORTS = setOf("obfs4", "webtunnel", "snowflake", "meek_lite", "meek")
     }
