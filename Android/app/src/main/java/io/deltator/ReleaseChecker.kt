@@ -384,15 +384,37 @@ object ReleaseChecker {
         }
     }
 
-    private fun compareVersions(a: String, b: String): Int {
-        val pa = a.split(".").mapNotNull { it.toIntOrNull() }
-        val pb = b.split(".").mapNotNull { it.toIntOrNull() }
-        for (i in 0 until maxOf(pa.size, pb.size)) {
-            val x = pa.getOrElse(i) { 0 }
-            val y = pb.getOrElse(i) { 0 }
-            if (x != y) return x - y
+    /**
+     * Semver-style order: numeric parts first, then a version with a suffix
+     * (`1.0.2-test1`) sorts before the same version without one (`1.0.2`).
+     *
+     * Parts used to be kept only when they were whole numbers, so `2-test1` was
+     * dropped and `1.0.2-test1` compared as `1.0` -- older than `1.0.1`, which
+     * the updater then offered as an upgrade.
+     */
+    internal fun compareVersions(a: String, b: String): Int {
+        val (na, sa) = splitVersion(a)
+        val (nb, sb) = splitVersion(b)
+        for (i in 0 until maxOf(na.size, nb.size)) {
+            val x = na.getOrElse(i) { 0 }
+            val y = nb.getOrElse(i) { 0 }
+            if (x != y) return x.compareTo(y)
         }
-        return 0
+        return when {
+            sa == sb -> 0
+            sa.isEmpty() -> 1
+            sb.isEmpty() -> -1
+            else -> sa.compareTo(sb)
+        }
+    }
+
+    /** `v1.0.2-test1` -> ([1, 0, 2], "test1"). */
+    private fun splitVersion(v: String): Pair<List<Int>, String> {
+        val clean = v.trim().removePrefix("v")
+        val cut = clean.indexOfFirst { it == '-' || it == '+' }
+        val core = if (cut < 0) clean else clean.substring(0, cut)
+        val suffix = if (cut < 0) "" else clean.substring(cut + 1)
+        return core.split('.').map { part -> part.takeWhile { it.isDigit() }.toIntOrNull() ?: 0 } to suffix
     }
 
     private const val NOTIFICATION_UPDATE_ID = 42
