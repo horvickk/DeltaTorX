@@ -54,11 +54,11 @@ jobs:
 
           # 1. The APK itself.
           find Android/app/build/outputs/apk -name '*.apk' -exec cp {} dist/stage/apk/ \;
-          pack dist/stage/apk "$PWD/dist/deltator-debug-apk.zip"
+          pack dist/stage/apk "$PWD/dist/deltatorx-debug-apk.zip"
 
           # 2. The sources, from the commit that was built, so the zip and the
           #    APK cannot disagree about what "this build" was.
-          git archive --format=zip --output=dist/deltator-sources.zip HEAD
+          git archive --format=zip --output=dist/deltatorx-sources.zip HEAD
 
           # 3. Unstripped native libraries. Tor, lyrebird and hev-socks5-tunnel
           #    are C, and a stack trace from a crash is unreadable without these.
@@ -71,27 +71,27 @@ jobs:
               find "$dir" -name '*.so' -exec cp --parents {} dist/stage/symbols/ \;
             fi
           done
-          pack dist/stage/symbols "$PWD/dist/deltator-native-symbols.zip"
+          pack dist/stage/symbols "$PWD/dist/deltatorx-native-symbols.zip"
 
           ls -la dist/*.zip
 
       - name: Upload the debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: deltator-debug-apk
-          path: dist/deltator-debug-apk.zip
+          name: deltatorx-debug-apk
+          path: dist/deltatorx-debug-apk.zip
           if-no-files-found: error
 
       - name: Upload the sources
         uses: actions/upload-artifact@v4
         with:
-          name: deltator-sources
-          path: dist/deltator-sources.zip
+          name: deltatorx-sources
+          path: dist/deltatorx-sources.zip
           if-no-files-found: error
 
       - name: Upload the native debug symbols
         uses: actions/upload-artifact@v4
         with:
-          name: deltator-native-symbols
-          path: dist/deltator-native-symbols.zip
+          name: deltatorx-native-symbols
+          path: dist/deltatorx-native-symbols.zip
           if-no-files-found: error

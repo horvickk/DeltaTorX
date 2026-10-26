@@ -160,10 +160,14 @@ object ReleaseChecker {
             if (!name.endsWith(".apk")) continue
             apks[name] = asset.optString("browser_download_url") to asset.optLong("size")
         }
-        for (abi in Build.SUPPORTED_ABIS) {
-            apks["deltator-$tag-$abi.apk"]?.let { (u, s) -> return Triple("deltator-$tag-$abi.apk", u, s) }
+        // deltatorx- is the current name; deltator- is what v1.0.0 shipped as.
+        val prefixes = listOf("deltatorx", "deltator")
+        for (abi in Build.SUPPORTED_ABIS.toList() + "universal") {
+            for (prefix in prefixes) {
+                val name = "$prefix-$tag-$abi.apk"
+                apks[name]?.let { (u, s) -> return Triple(name, u, s) }
+            }
         }
-        apks["deltator-$tag-universal.apk"]?.let { (u, s) -> return Triple("deltator-$tag-universal.apk", u, s) }
         val any = apks.entries.firstOrNull() ?: return null
         return Triple(any.key, any.value.first, any.value.second)
     }

@@ -198,12 +198,12 @@ jobs:
           shopt -s nullglob
           for apk in Android/app/build/outputs/apk/release/app-*-release.apk; do
             abi="$(basename "$apk" | sed -E 's/^app-(.+)-release\.apk$/\1/')"
-            cp "$apk" "dist/deltator-$TAG_NAME-$abi.apk"
+            cp "$apk" "dist/deltatorx-$TAG_NAME-$abi.apk"
           done
           ls -l dist
-          test -f "dist/deltator-$TAG_NAME-arm64-v8a.apk"
-          test -f "dist/deltator-$TAG_NAME-armeabi-v7a.apk"
-          test -f "dist/deltator-$TAG_NAME-universal.apk"
+          test -f "dist/deltatorx-$TAG_NAME-arm64-v8a.apk"
+          test -f "dist/deltatorx-$TAG_NAME-armeabi-v7a.apk"
+          test -f "dist/deltatorx-$TAG_NAME-universal.apk"
 
       - name: Check the APK version matches the tag
         # Gradle derives versionName/versionCode from the same property the tag
@@ -347,7 +347,7 @@ jobs:
       - name: Upload release APKs
         uses: actions/upload-artifact@v4
         with:
-          name: deltator-release-apks
+          name: deltatorx-release-apks
           path: dist/*.apk
           if-no-files-found: error
 

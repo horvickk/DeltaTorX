@@ -109,9 +109,9 @@ Grab the asset you need from the
 
 | Asset | Use it on | Size |
 |---|---|---|
-| `deltator-vX.Y.Z-arm64-v8a.apk` | almost every phone and tablet made in the last decade | ~22 MB |
-| `deltator-vX.Y.Z-armeabi-v7a.apk` | 32-bit ARM devices | ~22 MB |
-| `deltator-vX.Y.Z-universal.apk` | anything else, carries every ABI | ~38 MB |
+| `deltatorx-vX.Y.Z-arm64-v8a.apk` | almost every phone and tablet made in the last decade | ~22 MB |
+| `deltatorx-vX.Y.Z-armeabi-v7a.apk` | 32-bit ARM devices | ~22 MB |
+| `deltatorx-vX.Y.Z-universal.apk` | anything else, carries every ABI | ~38 MB |
 
 Requirements: Android 7.0 (API 24) or newer. `x86` Android payloads
 only contain the tunnel component, so the app is meant for real ARM devices, not emulators.
