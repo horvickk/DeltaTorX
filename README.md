@@ -1,4 +1,4 @@
-# DeltaTor
+# DeltaTorX
 
 DeltaTor is a free Tor client for Android built on one idea: **connecting should
 just work, and it should be fast — even on networks that try to block Tor.** Instead of
@@ -105,7 +105,7 @@ needs network access.
 ## Install
 
 Grab the asset you need from the
-[releases page](https://github.com/horvickk/DeltaTor-/releases).
+[releases page](https://github.com/horvickk/DeltaTorX/releases).
 
 | Asset | Use it on | Size |
 |---|---|---|

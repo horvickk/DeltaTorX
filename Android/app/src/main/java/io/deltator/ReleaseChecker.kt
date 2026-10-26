@@ -32,7 +32,7 @@ import java.net.URL
  */
 object ReleaseChecker {
     private const val TAG = "ReleaseChecker"
-    private const val REPO = "horvickk/DeltaTor-"
+    private const val REPO = "horvickk/DeltaTorX"
     private const val API_LATEST = "https://api.github.com/repos/$REPO/releases/latest"
     private const val GITHUB_URL = "https://github.com/$REPO"
     private const val UPDATES_DIR = "updates"

@@ -672,7 +672,7 @@ private fun WarnIcon(modifier: Modifier = Modifier, color: Color = DeltaTor.Ambe
     }
 }
 
-private const val REPO_URL = "https://github.com/horvickk/DeltaTor-"
+private const val REPO_URL = "https://github.com/horvickk/DeltaTorX"
 
 /**
  * How many countries the picker leads with, by exit bandwidth.
