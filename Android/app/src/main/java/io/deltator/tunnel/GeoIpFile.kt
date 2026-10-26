@@ -39,6 +39,7 @@ object GeoIpFile {
     private const val ASSET_GZIP = "geoip/country.csv.gz"
     private const val ASSET_PLAIN = "geoip/country.csv"
     private const val HEADER_PREFIX = "# countries:"
+    private const val SHARED_DIR = "geoip_shared"
 
     /**
      * Make sure [dataDir] holds a geoip and geoip6 that cover exactly [countries].
@@ -52,14 +53,41 @@ object GeoIpFile {
             .sorted()
         if (wanted.isEmpty()) return false
         val signature = wanted.joinToString(",")
+        if (matches(dataDir, signature)) return true
+
+        // Every runner needs the same two files. The 31 MB table is read once,
+        // into a shared copy, and each runner's data directory gets a copy of
+        // that; reading it per runner cost several seconds each on a phone, one
+        // runner after another, on the first connect after a country change.
+        val shared = File(context.filesDir, SHARED_DIR)
+        synchronized(this) {
+            if (!matches(shared, signature) && !build(context, shared, wanted, signature)) return false
+        }
+        return try {
+            if (!dataDir.isDirectory) dataDir.mkdirs()
+            for (name in listOf("geoip", "geoip6")) {
+                val tmp = File(dataDir, "$name.tmp")
+                File(shared, name).copyTo(tmp, overwrite = true)
+                replace(tmp, File(dataDir, name))
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "geoip copy failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun matches(dir: File, signature: String): Boolean {
+        val v4 = File(dir, "geoip")
+        val v6 = File(dir, "geoip6")
+        return v4.isFile && v4.length() > 0 && v6.isFile && v6.length() > 0 &&
+            header(v4) == signature && header(v6) == signature
+    }
+
+    /** Cut [wanted] out of the bundled table into [dataDir]. */
+    private fun build(context: Context, dataDir: File, wanted: List<String>, signature: String): Boolean {
         val v4 = File(dataDir, "geoip")
         val v6 = File(dataDir, "geoip6")
-        if (v4.isFile && v4.length() > 0 && v6.isFile && v6.length() > 0 &&
-            header(v4) == signature && header(v6) == signature
-        ) {
-            return true
-        }
-
         return try {
             if (!dataDir.isDirectory && !dataDir.mkdirs()) {
                 Log.e(TAG, "cannot create $dataDir")
@@ -88,8 +116,10 @@ object GeoIpFile {
                             val low = parts[0].trim()
                             val high = parts[1].trim()
                             if (low.contains(':')) {
-                                // IPv6: Tor parses the bounds as text.
-                                if (high < low) continue
+                                // IPv6: Tor parses the bounds as text. Compared as
+                                // numbers: as strings, 2001:9:: sorts after
+                                // 2001:10::, which dropped valid ranges.
+                                if (!ipv6Ordered(low, high)) continue
                                 out6.write("$low,$high,$cc\n")
                                 kept6++
                             } else {
@@ -163,6 +193,18 @@ object GeoIpFile {
         }
     } catch (e: Exception) {
         null
+    }
+
+    private fun ipv6Ordered(low: String, high: String): Boolean {
+        val a = runCatching { java.net.InetAddress.getByName(low).address }.getOrNull() ?: return false
+        val b = runCatching { java.net.InetAddress.getByName(high).address }.getOrNull() ?: return false
+        if (a.size != 16 || b.size != 16) return false
+        for (i in 0 until 16) {
+            val x = a[i].toInt() and 0xFF
+            val y = b[i].toInt() and 0xFF
+            if (x != y) return x < y
+        }
+        return true
     }
 
     /** `1.2.3.4` to the unsigned 32 bit number Tor expects, or null when invalid. */

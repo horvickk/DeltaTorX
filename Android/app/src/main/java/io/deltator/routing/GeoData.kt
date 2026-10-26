@@ -27,7 +27,13 @@ object GeoData {
     const val GEOIP_FILE = "geoip.dat"
     const val ASSET_GEOSITE = "geo/geosite.dat"
     const val ASSET_GEOIP = "geo/geoip.dat"
-    private const val ASSET_COUNTRY_TABLE = "geoip/country.csv.gz"
+    /**
+     * The country range table. The packager un-gzips `.gz` assets, so inside an
+     * APK it is plain `country.csv`; the `.gz` name is what a source tree or an
+     * unusual packager may leave. Both are tried.
+     */
+    private const val ASSET_COUNTRY_TABLE_GZ = "geoip/country.csv.gz"
+    private const val ASSET_COUNTRY_TABLE = "geoip/country.csv"
     private const val CACHE_VERSION = 1
 
     // Domain types, as numbered in v2ray's router.proto.
@@ -266,8 +272,7 @@ object GeoData {
         val builders = toBuild.associateWith { IpSet.Builder() }
         val upper = toBuild.associateBy { it.uppercase() }
         try {
-            GZIPInputStream(context.assets.open(ASSET_COUNTRY_TABLE), 1 shl 16)
-                .bufferedReader(Charsets.UTF_8).useLines { lines ->
+            openCountryTable(context).bufferedReader(Charsets.UTF_8).useLines { lines ->
                     for (line in lines) {
                         val c2 = line.lastIndexOf(',')
                         if (c2 < 0 || line.length - c2 != 3) continue
@@ -290,6 +295,12 @@ object GeoData {
             Log.i(TAG, "geoip:$cc built from country table: ${set.v4Count} v4 / ${set.v6Count} v6 ranges")
         }
         return out
+    }
+
+    private fun openCountryTable(context: Context): InputStream = try {
+        context.assets.open(ASSET_COUNTRY_TABLE).buffered(1 shl 16)
+    } catch (_: java.io.FileNotFoundException) {
+        GZIPInputStream(context.assets.open(ASSET_COUNTRY_TABLE_GZ), 1 shl 16)
     }
 
     private fun apkStamp(context: Context): Long = try {

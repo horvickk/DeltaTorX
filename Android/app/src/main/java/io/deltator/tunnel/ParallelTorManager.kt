@@ -5,6 +5,9 @@ import io.deltator.util.AppLog as Log
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
@@ -465,20 +468,29 @@ object ParallelTorManager {
 
         val gen = beginRunners()
 
-        preparedPlans.forEach { (name, bridgeLines) ->
-            val runner = TorRunner(context, name, allPorts.getValue(name), bridgeLines)
-            synchronized(runnersLock) { runners[name] = runner }
-            val bridgeCount = bridgeLines.lines().count { it.isNotBlank() }
-            Log.transport(sessionId, name, 'I', TAG, "starting ($bridgeCount bridges)")
-            val result = runner.start()
-            if (result.isFailure) {
-                val reason = result.exceptionOrNull()?.message ?: "failed to start"
-                runner.failed = reason
-                Log.transport(sessionId, name, 'E', TAG, "failed to start: $reason")
-                Log.e(TAG, "$name failed to start: $reason")
-            } else {
-                Log.transport(sessionId, name, 'I', TAG, "tor + transport started")
-            }
+        // Started side by side, not one after another: a runner with a pluggable
+        // transport waits for lyrebird to register (and dnstt for its clients)
+        // before Tor is even launched, and in a row every runner paid for the
+        // ones before it. Each runner owns its own directory, ports and
+        // processes; the shared geoip build is serialised inside GeoIpFile.
+        coroutineScope {
+            preparedPlans.map { (name, bridgeLines) ->
+                val runner = TorRunner(context, name, allPorts.getValue(name), bridgeLines)
+                synchronized(runnersLock) { runners[name] = runner }
+                async(Dispatchers.IO) {
+                    val bridgeCount = bridgeLines.lines().count { it.isNotBlank() }
+                    Log.transport(sessionId, name, 'I', TAG, "starting ($bridgeCount bridges)")
+                    val result = runner.start()
+                    if (result.isFailure) {
+                        val reason = result.exceptionOrNull()?.message ?: "failed to start"
+                        runner.failed = reason
+                        Log.transport(sessionId, name, 'E', TAG, "failed to start: $reason")
+                        Log.e(TAG, "$name failed to start: $reason")
+                    } else {
+                        Log.transport(sessionId, name, 'I', TAG, "tor + transport started")
+                    }
+                }
+            }.awaitAll()
         }
 
         // Runners already proven in an earlier poll, so two runners finishing in

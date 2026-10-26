@@ -50,6 +50,15 @@ class TorRunner(
      */
     private val dnsttClients = mutableListOf<DnsttClient>()
 
+    /**
+     * Tor's own DNS listener (UDP, loopback). The SOCKS bridge resolves A/AAAA
+     * here: Tor answers from the exit in one round trip, where a DNS-over-TCP
+     * query through a SOCKS stream first needs a TCP handshake with a public
+     * resolver across the whole circuit. 0 until the torrc is written.
+     */
+    @Volatile var dnsPort = 0
+        private set
+
     /** The loopback control port Tor binds when exit countries are selected. */
     @Volatile private var controlPort = 0
     private val exitApplied = AtomicBoolean(false)
@@ -418,7 +427,7 @@ class TorRunner(
                         val up = line!!
                         Log.d(tag, up)
                         noteBridgeDescriptor(up)
-                        val match = Regex("Bootstrapped (\\d+)%").find(up)
+                        val match = if (up.contains("Bootstrapped")) BOOTSTRAPPED.find(up) else null
                         if (match != null) {
                             val pct = match.groupValues[1].toInt()
                             bootstrapPercent.set(pct)
@@ -501,7 +510,7 @@ class TorRunner(
                     when {
                         l.startsWith("VERSION ") -> Log.i(tag, "Lyrebird protocol: $l")
                         l.startsWith("CMETHOD ") -> {
-                            val parts = l.split("\\s+".toRegex())
+                            val parts = l.split(WHITESPACE)
                             if (parts.size >= 4) {
                                 val m = parts[1]
                                 val addr = parts[3]
@@ -608,22 +617,28 @@ class TorRunner(
         // plain `ip:port fp` line has an address as its first token, and treating
         // that as a transport name logged one bogus "no CMETHOD" warning per
         // bridge. A mixed list is hundreds of lines, so it was hundreds of them.
-        val transports = cleanLines.map { it.split("\\s+".toRegex()).firstOrNull()?.lowercase() ?: "" }
+        val transports = cleanLines.map { it.split(WHITESPACE).firstOrNull()?.lowercase() ?: "" }
             .filter { it in PLUGGABLE_TRANSPORTS }
             .distinct()
 
         val torrcFile = File(dataDir, "torrc")
+        dnsPort = freeEphemeralPort()
         val common = buildString {
             // IPv6Traffic: the VPN carries IPv6 too, and without the flag Tor
             // refuses every IPv6 destination an app connects to.
             appendLine("SocksPort $listenHost:$torSocksPort IPv6Traffic")
+            appendLine("DNSPort $listenHost:$dnsPort IPv6Traffic")
             appendLine("DataDirectory ${dataDir.absolutePath}")
             appendLine("UseBridges ${if (isDirect) 0 else 1}")
             val geoipFile = File(dataDir, "geoip")
             val geoip6File = File(dataDir, "geoip6")
             if (geoipFile.exists()) appendLine("GeoIPFile ${geoipFile.absolutePath}")
             if (geoip6File.exists()) appendLine("GeoIPv6File ${geoip6File.absolutePath}")
-            appendLine("Log info stdout")
+            // notice carries everything the app parses (bootstrap progress, the
+            // "new bridge descriptor" lines memory learns from, warnings); info
+            // adds a line per circuit and stream for the whole session, which is
+            // only worth reading when the user turned the log on.
+            appendLine("Log ${if (io.deltator.Config.loggingEnabled) "info" else "notice"} stdout")
             appendLine("KeepalivePeriod 30")
             appendLine("ClientUseIPv4 1")
             appendLine("ClientUseIPv6 1")
@@ -826,6 +841,7 @@ class TorRunner(
         private const val FRESH_MARKER = "(fresh): \$"
         private const val DNSTT_PREFIX = "dnstt"
         private val WHITESPACE = Regex("\\s+")
+        private val BOOTSTRAPPED = Regex("Bootstrapped (\\d+)%")
         private val PLUGGABLE_TRANSPORTS = setOf("obfs4", "webtunnel", "snowflake", "meek_lite", "meek")
     }
 }

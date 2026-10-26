@@ -118,6 +118,7 @@ object AppLog {
     }
 
     private fun append(level: Char, tag: String, msg: String) {
+        if (!enabled) return
         appendFor(level, tag, msg, transportOf(tag))
     }
 
@@ -248,16 +249,22 @@ object AppLog {
     }
 
     fun v(tag: String, msg: String): Int {
+        // With the log off, routine lines cost nothing: Tor alone prints one per
+        // circuit while connected, and each used to be formatted, matched and
+        // handed to logcat even though nobody would ever read it.
+        if (!enabled) return 0
         if (!shouldRedact(tag)) append('V', tag, msg)
         return android.util.Log.v(tag, msg)
     }
 
     fun d(tag: String, msg: String): Int {
+        if (!enabled) return 0
         if (!shouldRedact(tag)) append('D', tag, msg)
         return android.util.Log.d(tag, msg)
     }
 
     fun i(tag: String, msg: String): Int {
+        if (!enabled) return 0
         if (!shouldRedact(tag)) append('I', tag, msg)
         return android.util.Log.i(tag, msg)
     }

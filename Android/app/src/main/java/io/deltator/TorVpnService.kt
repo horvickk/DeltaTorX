@@ -70,7 +70,11 @@ class TorVpnService : VpnService() {
         const val NOTIFICATION_ID = 1
 
         private const val TAG = "TorVpnService"
-        private const val VPN_MTU = 1280
+        // The TUN never leaves the device: TCP is terminated in tun2socks, so this
+        // only sets how finely apps' traffic is cut into packets on the way in.
+        // 8500 is what hev-socks5-tunnel recommends; 1280 meant about seven times
+        // the packets, and the per-packet work, for the same bytes.
+        private const val VPN_MTU = 8500
         private const val VPN_ADDRESS = "10.255.255.1"
         private const val VPN_ROUTE = "0.0.0.0"
         // IPv6 has to be captured too. With only the IPv4 route, every IPv6
@@ -589,6 +593,7 @@ class TorVpnService : VpnService() {
         }
         val bridgeResult = TorSocksBridge.start(
             torSocksPort = w.torSocksPort,
+            torDnsPort = w.dnsPort,
             torHost = "127.0.0.1",
             listenPort = proxyPort,
             listenHost = proxyHost
@@ -1560,10 +1565,19 @@ class TorVpnService : VpnService() {
      */
     private fun probeTunnelUsable(): ProbeResult {
         var stage = "connect"
+        // Tor's own SOCKS port, not the app's bridge: with routing on, the bridge
+        // answers a CONNECT before it has asked Tor anything (it has to read the
+        // client's first bytes to route), so a probe through it always said ok,
+        // even with Tor dead. The bridge itself is checked on its own.
+        if (!TorSocksBridge.isClientHealthy()) {
+            return logProbe("bridge listener is down", ProbeResult.Dead)
+        }
+        val torPort = activeRunner?.torSocksPort
+            ?: return logProbe("no active transport", ProbeResult.Dead)
         return try {
             Socket().use { s ->
-                stage = "bridge"
-                s.connect(InetSocketAddress("127.0.0.1", Config.proxyPort), PROBE_TIMEOUT_MS)
+                stage = "tor socks"
+                s.connect(InetSocketAddress("127.0.0.1", torPort), PROBE_TIMEOUT_MS)
                 s.soTimeout = PROBE_TIMEOUT_MS
                 val out = s.getOutputStream()
                 val input = s.getInputStream()
@@ -1572,7 +1586,7 @@ class TorVpnService : VpnService() {
                 val version = input.read()
                 val method = input.read()
                 if (version != 0x05 || method != 0x00) {
-                    return logProbe("bridge rejected greeting: $version/$method", ProbeResult.Dead)
+                    return logProbe("Tor rejected greeting: $version/$method", ProbeResult.Dead)
                 }
                 stage = "tor"
                 // CONNECT 1.1.1.1:80, then close without sending a byte.
@@ -1662,7 +1676,7 @@ class TorVpnService : VpnService() {
                 return
             }
 
-            TorSocksBridge.repoint(winner.torSocksPort)
+            TorSocksBridge.repoint(winner.torSocksPort, winner.dnsPort)
             activeRunner = winner
             AppState.update {
                 it.copy(

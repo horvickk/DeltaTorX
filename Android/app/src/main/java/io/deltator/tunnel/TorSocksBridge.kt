@@ -4,7 +4,6 @@ import io.deltator.routing.GeoData
 import io.deltator.routing.RouteOutbound
 import io.deltator.routing.Router
 import io.deltator.util.AppLog as Log
-import java.io.BufferedOutputStream
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -80,6 +79,9 @@ object TorSocksBridge {
     private const val SNIFF_TIMEOUT_MS = 1000
     private const val DIRECT_CONNECT_TIMEOUT_MS = 10_000
     private const val DIRECT_DNS_TIMEOUT_MS = 4000
+    /** Tor waits for the exit before answering; a lookup rarely needs more. */
+    private const val DNS_PORT_TIMEOUT_MS = 10_000
+    private val LOOPBACK = byteArrayOf(127, 0, 0, 1)
     private val SOCKS_OK = byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0)
     private val SOCKS_NOT_ALLOWED = byteArrayOf(0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0)
     private val SOCKS_REFUSED = byteArrayOf(0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0)
@@ -92,6 +94,7 @@ object TorSocksBridge {
 
     private var torHost: String = "127.0.0.1"
     private var torSocksPort: Int = 0
+    @Volatile private var torDnsPort: Int = 0
     private var localAuthUsername: String? = null
     private var localAuthPassword: String? = null
     private var serverSocket: ServerSocket? = null
@@ -106,6 +109,7 @@ object TorSocksBridge {
 
     fun start(
         torSocksPort: Int,
+        torDnsPort: Int = 0,
         torHost: String = "127.0.0.1",
         listenPort: Int,
         listenHost: String = "127.0.0.1",
@@ -122,6 +126,7 @@ object TorSocksBridge {
         stop()
         this.torHost = torHost
         this.torSocksPort = torSocksPort
+        this.torDnsPort = torDnsPort
         this.localAuthUsername = localAuthUsername
         this.localAuthPassword = localAuthPassword
 
@@ -189,7 +194,8 @@ object TorSocksBridge {
      * the new runner. This is what makes a recovery invisible, the tunnel never
      * goes down while a replacement Tor boots on the same bridge.
      */
-    fun repoint(torSocksPort: Int) {
+    fun repoint(torSocksPort: Int, torDnsPort: Int) {
+        this.torDnsPort = torDnsPort
         if (this.torSocksPort != torSocksPort) {
             Log.i(TAG, "Repointing bridge: $torHost:${this.torSocksPort} -> $torHost:$torSocksPort")
             this.torSocksPort = torSocksPort
@@ -853,8 +859,47 @@ object TorSocksBridge {
         byteArrayOf(9, 9, 9, 9)    // Quad9
     )
 
-    /** Ask each resolver in turn over Tor; null when none answers. */
+    /**
+     * Resolve over Tor: A and AAAA through Tor's DNSPort (one round trip to the
+     * exit), everything else -- and anything the DNSPort fails on -- as
+     * DNS-over-TCP to public resolvers through a SOCKS stream.
+     */
     private fun resolveThroughTor(payload: ByteArray): ByteArray? {
+        val qtype = dnsQuestionType(payload)
+        if (qtype == 1 || qtype == 28) {
+            resolveViaDnsPort(payload)?.let { return it }
+        }
+        return resolveViaResolvers(payload)
+    }
+
+    /**
+     * Tor's DNSPort over loopback UDP. Tor answers SERVFAIL when the exit could
+     * not resolve the name; that is passed on as is, since asking a public
+     * resolver through the same Tor would mostly fail the same way, only slower.
+     */
+    private fun resolveViaDnsPort(payload: ByteArray): ByteArray? {
+        val port = torDnsPort
+        if (port <= 0) return null
+        return try {
+            DatagramSocket().use { socket ->
+                socket.soTimeout = DNS_PORT_TIMEOUT_MS
+                socket.send(DatagramPacket(payload, payload.size, InetAddress.getByAddress(LOOPBACK), port))
+                val buf = ByteArray(4096)
+                val packet = DatagramPacket(buf, buf.size)
+                socket.receive(packet)
+                if (packet.length >= 12 && buf[0] == payload[0] && buf[1] == payload[1]) {
+                    logd("DNS: resolved via Tor DNSPort")
+                    buf.copyOf(packet.length)
+                } else null
+            }
+        } catch (e: Exception) {
+            logd("DNS: Tor DNSPort gave no answer (${e.message}), falling back")
+            null
+        }
+    }
+
+    /** Ask each resolver in turn over Tor; null when none answers. */
+    private fun resolveViaResolvers(payload: ByteArray): ByteArray? {
         for (resolver in DNS_FALLBACK_RESOLVERS) {
             val response = forwardDnsTcp(resolver, payload)
             if (response != null) return response
@@ -1000,18 +1045,19 @@ object TorSocksBridge {
         }
     }
 
+    /**
+     * Pump [input] into [output] until EOF. A socket stream is unbuffered, so
+     * each read goes out as one write; a BufferedOutputStream in between only
+     * copied every byte a second time before flushing it right away.
+     */
     private fun copyStream(input: InputStream, output: OutputStream) {
-        val buffered = BufferedOutputStream(output, BUFFER_SIZE)
         val buffer = ByteArray(BUFFER_SIZE)
         while (!Thread.currentThread().isInterrupted) {
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) break
-            buffered.write(buffer, 0, bytesRead)
-            if (bytesRead < BUFFER_SIZE || input.available() == 0) {
-                buffered.flush()
-            }
+            output.write(buffer, 0, bytesRead)
         }
-        buffered.flush()
+        output.flush()
     }
 
     private fun InputStream.readFully(buffer: ByteArray) {
