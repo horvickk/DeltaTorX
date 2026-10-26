@@ -82,6 +82,7 @@ class TorVpnService : VpnService() {
         // out with the device's real address.
         private const val VPN_ADDRESS6 = "fd00::1"
         private const val VPN_ROUTE6 = "::"
+        private const val NETWORK_SETTLE_MS = 2_000L
         private const val DEFAULT_DNS = "8.8.8.8"
 
         /** How often the connected tunnel is asked whether Tor can still carry traffic. */
@@ -283,6 +284,12 @@ class TorVpnService : VpnService() {
      * dropped connection is known without waiting for a request to time out.
      */
     @Volatile private var linkUp = true
+
+    /** Whether the live TUN captures IPv6; see [establishVpnInterface]. */
+    @Volatile private var tunnelIpv6 = false
+
+    /** A pending re-check after a network change, so a burst of callbacks is one check. */
+    private var networkCheckJob: Job? = null
     private val recovering = AtomicBoolean(false)
     private var failedProbes = 0
 
@@ -1133,8 +1140,14 @@ class TorVpnService : VpnService() {
                 .setSession("DeltaTor")
                 .setMtu(VPN_MTU)
                 .addAddress(VPN_ADDRESS, 32)
-                .addAddress(VPN_ADDRESS6, 128)
                 .addDnsServer(DEFAULT_DNS)
+            // IPv6 is captured only where the network has it. Without it there
+            // is nothing to leak, and capturing it anyway made apps think IPv6
+            // worked: a site bypassing Tor then had no direct IPv6 route and
+            // ended up reaching Russian sites over Tor's IPv6 exit. Re-checked
+            // on every network change (see onUnderlyingNetworkChanged).
+            val captureIpv6 = underlyingHasIpv6()
+            if (captureIpv6) builder.addAddress(VPN_ADDRESS6, 128)
             val picks = Config.splitTunnelSelected.filter { it != packageName }
             val vpnOnly = Config.splitTunnelMode == Config.SPLIT_MODE_VPN
             val usingAllowList = Config.splitTunnelEnabled && vpnOnly
@@ -1247,7 +1260,7 @@ class TorVpnService : VpnService() {
                         )
                     }
                 }
-                builder.addRoute(VPN_ROUTE, 0).addRoute(VPN_ROUTE6, 0)
+                builder.addRoute(VPN_ROUTE, 0).also { if (captureIpv6) it.addRoute(VPN_ROUTE6, 0) }
                 Log.i(
                     TAG,
                     if (vpnOnly) {
@@ -1271,7 +1284,7 @@ class TorVpnService : VpnService() {
                     return null
                 }
             } else {
-                builder.addRoute(VPN_ROUTE, 0).addRoute(VPN_ROUTE6, 0)
+                builder.addRoute(VPN_ROUTE, 0).also { if (captureIpv6) it.addRoute(VPN_ROUTE6, 0) }
                 Log.i(TAG, "Split tunnel: off, every app goes through Tor")
             }
             builder.setBlocking(false)
@@ -1279,11 +1292,13 @@ class TorVpnService : VpnService() {
             // platform refused the configuration, and it gives no reason, so the
             // line above is the only record of what was asked for.
             val tun = builder.establish()
+            if (tun != null) tunnelIpv6 = captureIpv6
             Log.i(
                 TAG,
                 tunSection {
                     line("establish", if (tun == null) "returned null" else "ok fd=${tun.fd}")
                     line("session", "DeltaTor mtu=$VPN_MTU addr=$VPN_ADDRESS/32 dns=$DEFAULT_DNS")
+                    line("ipv6", if (captureIpv6) "captured ($VPN_ADDRESS6, ::/0)" else "not captured: the network has none")
                 }
             )
             tun
@@ -1752,11 +1767,16 @@ class TorVpnService : VpnService() {
             }
 
             override fun onAvailable(network: Network) {
+                onUnderlyingNetworkChanged()
                 if (linkUp) return
                 linkUp = true
                 failedProbes = 0
                 quietProbes = 0
                 Log.i(TAG, "Network available again")
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, lp: android.net.LinkProperties) {
+                onUnderlyingNetworkChanged()
             }
         }
         try {
@@ -1766,6 +1786,68 @@ class TorVpnService : VpnService() {
         } catch (e: Exception) {
             Log.w(TAG, "Network callback unavailable: ${e.message}")
         }
+    }
+
+    /**
+     * The network under the VPN changed (Wi-Fi <-> cellular, or its addresses).
+     *
+     * The routing inputs read from it are refreshed: bypassed names must be
+     * asked of the resolvers of the network actually in use, not of the one the
+     * connect started on. And when IPv6 appeared or went away, the TUN is
+     * rebuilt to match, since a TUN capturing IPv6 on a network without it
+     * sends bypassed IPv6 through Tor, and one not capturing it on a network
+     * with it lets IPv6 leave outside Tor.
+     */
+    private fun onUnderlyingNetworkChanged() {
+        networkCheckJob?.cancel()
+        networkCheckJob = serviceScope.launch {
+            // Callbacks come in bursts while a network settles.
+            delay(NETWORK_SETTLE_MS)
+            TorSocksBridge.directDnsServers = underlyingDnsServers()
+            val hasIpv6 = underlyingHasIpv6()
+            TorSocksBridge.directIpv6 = hasIpv6
+            val s = AppState.state.value
+            val chainActive = chainEngine?.isActive == true
+            if (!s.connected || s.stopping || chainActive || Config.proxyOnlyMode) return@launch
+            if (hasIpv6 == tunnelIpv6) return@launch
+            Log.i(TAG, "Network IPv6 is now ${if (hasIpv6) "available" else "gone"}; rebuilding the tunnel")
+            rebuildTunnel()
+        }
+    }
+
+    /**
+     * Replace the TUN with a freshly built one on top of the same running Tor and
+     * SOCKS bridge. Open connections are dropped (the network change that called
+     * for this drops them anyway); nothing else is touched.
+     */
+    private suspend fun rebuildTunnel() {
+        val old = vpnInterface
+        try { HevSocks5Tunnel.stop() } catch (_: Exception) {}
+        val fresh = establishVpnInterface()
+        if (fresh == null) {
+            Log.e(TAG, "tunnel rebuild failed: ${establishFailureReason ?: "establish returned null"}")
+            try { old?.close() } catch (_: Exception) {}
+            vpnInterface = null
+            fail(establishFailureReason ?: "Failed to rebuild the VPN interface")
+            return
+        }
+        vpnInterface = fresh
+        try { old?.close() } catch (_: Exception) {}
+        delay(200)
+        val result = HevSocks5Tunnel.start(
+            tunFd = fresh,
+            socksAddress = "127.0.0.1",
+            socksPort = Config.proxyPort,
+            enableUdpTunneling = true,
+            mtu = VPN_MTU,
+            ipv4Address = VPN_ADDRESS,
+            ipv6Address = VPN_ADDRESS6
+        )
+        if (result.isFailure) {
+            fail(result.exceptionOrNull()?.message ?: "Failed to restart the tunnel")
+            return
+        }
+        Log.i(TAG, "tunnel rebuilt (IPv6 ${if (tunnelIpv6) "captured" else "not captured"})")
     }
 
     private fun unregisterNetworkCallback() {
