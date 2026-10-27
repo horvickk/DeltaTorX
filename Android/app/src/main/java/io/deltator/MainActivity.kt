@@ -150,6 +150,11 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        /** Set by the Quick Settings tile: connect as soon as the app is up. */
+        const val EXTRA_CONNECT = "io.deltator.extra.CONNECT"
+    }
+
     private val vpnPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK) {
@@ -167,6 +172,7 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermissionIfNeeded()
         ExitNodes.loadDirectory(this)
         maybeShowFirstRunNotice()
+        handleConnectRequest(intent)
         setContent {
             DeltaTorTheme {
                 DeltaTorScreen(
@@ -246,6 +252,25 @@ class MainActivity : ComponentActivity() {
             lead = "Пожалуйста, будьте терпеливы при первом подключении"
         )
     )
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleConnectRequest(intent)
+    }
+
+    /**
+     * The Quick Settings tile opens the app with [EXTRA_CONNECT] when Android
+     * still has to ask for VPN permission, which only an activity can do. The
+     * extra is consumed so a rotation or a return to the app cannot connect
+     * again behind the user's back.
+     */
+    private fun handleConnectRequest(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_CONNECT, false) != true) return
+        intent.removeExtra(EXTRA_CONNECT)
+        val s = AppState.state.value
+        if (s.connecting || s.connected || s.stopping) return
+        requestVpnPermissionAndConnect()
+    }
 
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
